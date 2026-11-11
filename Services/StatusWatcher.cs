@@ -63,6 +63,8 @@ public sealed class StatusWatcher : IDisposable
     private IntPtr _imeCacheForeground;
     private bool _hasLastIme;
     private bool _lastChinese;
+    private InputStatus _lastValidIme = InputStatus.Empty;
+    private bool _hasValidIme;
 
     public StatusWatcher(IntPtr ownHudHandle, Action<InputStatus, Rect?> onUpdate)
     {
@@ -198,27 +200,38 @@ public sealed class StatusWatcher : IDisposable
         var foregroundChanged = _imeCacheForeground != foreground;
 
         if (_imeCache is { } cached && !foregroundChanged && now - _imeCacheAt < ImeCacheMs)
-            return cached.Status;
+            return ResolveIme(cached);
 
         var result = ImeStateReader.Read(foreground, focusWindow);
+        if (result.SmtoOk)
+        {
+            _lastValidIme = result.Status;
+            _hasValidIme = true;
+        }
 
-        // 诊断日志：记录 IME 原始返回值。前台变化或中/英跳变时输出，用于定位“无故跳变”。
-        if (AppLog.Enabled && (foregroundChanged || (_hasLastIme && _lastChinese != result.Chinese)))
+        var status = ResolveIme(result);
+
+        // 诊断日志：前台变化或解析后状态跳变时输出原始返回值
+        if (AppLog.Enabled && (foregroundChanged || (_hasLastIme && _lastChinese != status.IsChinese)))
         {
             AppLog.Write(
                 $"ime: fg=0x{foreground.ToInt64():X} cls={GetClassName(foreground)} " +
                 $"hwnd=0x{result.Hwnd.ToInt64():X} ime=0x{result.ImeWnd.ToInt64():X} " +
                 $"opened={result.Opened} conv={result.ConvMode} smto={result.SmtoOk} " +
-                $"cn={result.Chinese} caps={result.Caps} num={result.Num} fgChanged={foregroundChanged}");
+                $"cn={status.IsChinese} (raw={result.Chinese}) caps={status.CapsLock} num={status.NumLock} fgChanged={foregroundChanged}");
         }
 
         _hasLastIme = true;
-        _lastChinese = result.Chinese;
+        _lastChinese = status.IsChinese;
         _imeCache = result;
         _imeCacheAt = now;
         _imeCacheForeground = foreground;
-        return result.Status;
+        return status;
     }
+
+    /// <summary>查询超时（目标 UI 线程忙）时沿用上一次有效状态，避免误判为中英切换。</summary>
+    private InputStatus ResolveIme(ImeReadResult result)
+        => result.SmtoOk || !_hasValidIme ? result.Status : _lastValidIme;
 
     private string GetClassName(IntPtr hwnd)
     {
