@@ -10,7 +10,7 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <AssemblyName>CaretHUD</AssemblyName>
     <RootNamespace>CaretHUD</RootNamespace>
-    <Version>1.0.1</Version>
+    <Version>1.0.2</Version>
     <ApplicationIcon>icon.ico</ApplicationIcon>
     <NoWarn>$(NoWarn);WFO0003</NoWarn>
   </PropertyGroup>
