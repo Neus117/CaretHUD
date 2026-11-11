@@ -37,7 +37,7 @@
     </Window.Resources>
 
     <Grid Margin="16">
-        <Border Background="#F22A2F38"
+        <Border Background="#2A2F38"
                 CornerRadius="10"
                 Padding="20"
                 Width="360">

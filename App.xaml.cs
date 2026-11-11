@@ -95,11 +95,9 @@ public partial class App : Application
 
     protected override void OnExit(ExitEventArgs e)
     {
-        _trayMenu?.Close();
-        _aboutWindow?.Close();
+        // 窗口由 Shutdown 统一关闭，这里只清理后台资源，避免关闭期间重复 Close 抛异常
         _watcher?.Dispose();
         _tray?.Dispose();
-        _hud?.Close();
 
         if (_instanceMutex is not null)
         {

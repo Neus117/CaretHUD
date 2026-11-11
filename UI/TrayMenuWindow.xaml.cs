@@ -13,6 +13,7 @@ public partial class TrayMenuWindow : Window
     private readonly Action _onExit;
 
     private DateTime _shownAt;
+    private bool _closing;
 
     public TrayMenuWindow(Action onAbout, Action onTrim, Action onExit)
     {
@@ -22,14 +23,27 @@ public partial class TrayMenuWindow : Window
         _onExit = onExit;
 
         Deactivated += OnDeactivated;
-        KeyDown += (_, e) => { if (e.Key == Key.Escape) Close(); };
+        KeyDown += (_, e) => { if (e.Key == Key.Escape) CloseSafely(); };
     }
 
     private void OnDeactivated(object? sender, EventArgs e)
     {
+        // 关闭期间不再响应失活（避免关闭过程中重入 Close 抛异常）
+        if (_closing)
+            return;
+
         // Show 之后系统可能短暂夺走激活，忽略最初 300ms 内的失活，避免菜单一闪就关
         if ((DateTime.UtcNow - _shownAt).TotalMilliseconds > 300)
-            Close();
+            CloseSafely();
+    }
+
+    private void CloseSafely()
+    {
+        if (_closing)
+            return;
+
+        _closing = true;
+        Close();
     }
 
     public void ShowAtScreen(int screenX, int screenY)
@@ -61,19 +75,20 @@ public partial class TrayMenuWindow : Window
 
     private void OnAboutClick(object sender, RoutedEventArgs e)
     {
-        Close();
-        _onAbout();
+        CloseSafely();
+        // 延迟到菜单关闭完成后再显示说明窗口，避免在窗口关闭期间创建新窗口
+        Dispatcher.BeginInvoke(new Action(_onAbout), System.Windows.Threading.DispatcherPriority.Background);
     }
 
     private void OnTrimClick(object sender, RoutedEventArgs e)
     {
         _onTrim();
-        Close();
+        CloseSafely();
     }
 
     private void OnExitClick(object sender, RoutedEventArgs e)
     {
-        Close();
+        CloseSafely();
         _onExit();
     }
 }
