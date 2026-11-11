@@ -116,9 +116,9 @@ internal static class NativeMethods
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     public static extern int GetClassName(IntPtr hWnd, StringBuilder lpClassName, int nMaxCount);
 
-    public static int SendMessageTimeoutInt(IntPtr hWnd, int msg, int wParam)
+    public static (bool Ok, int Value) SendMessageTimeoutInt(IntPtr hWnd, int msg, int wParam)
     {
-        SendMessageTimeout(hWnd, (uint)msg, (IntPtr)wParam, IntPtr.Zero, SMTO_ABORTIFHUNG, 100, out var result);
-        return (int)result;
+        var signaled = SendMessageTimeout(hWnd, (uint)msg, (IntPtr)wParam, IntPtr.Zero, SMTO_ABORTIFHUNG, 100, out var result);
+        return (signaled != IntPtr.Zero, (int)result);
     }
 }

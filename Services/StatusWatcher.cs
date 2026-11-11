@@ -54,9 +54,11 @@ public sealed class StatusWatcher : IDisposable
     private string _className = string.Empty;
 
     // IME 状态缓存（SendMessageTimeout 较慢，按 100ms 降频）
-    private InputStatus? _imeCache;
+    private ImeReadResult? _imeCache;
     private long _imeCacheAt;
     private IntPtr _imeCacheForeground;
+    private bool _hasLastIme;
+    private bool _lastChinese;
 
     public StatusWatcher(IntPtr ownHudHandle, Action<InputStatus, Rect?> onUpdate)
     {
@@ -176,13 +178,29 @@ public sealed class StatusWatcher : IDisposable
     private InputStatus GetImeStatus(IntPtr foreground, IntPtr focusWindow)
     {
         var now = Environment.TickCount64;
-        if (_imeCache is { } cached && _imeCacheForeground == foreground && now - _imeCacheAt < ImeCacheMs)
-            return cached;
+        var foregroundChanged = _imeCacheForeground != foreground;
 
-        _imeCache = ImeStateReader.Read(foreground, focusWindow);
+        if (_imeCache is { } cached && !foregroundChanged && now - _imeCacheAt < ImeCacheMs)
+            return cached.Status;
+
+        var result = ImeStateReader.Read(foreground, focusWindow);
+
+        // 诊断日志：记录 IME 原始返回值。前台变化或中/英跳变时输出，用于定位“无故跳变”。
+        if (AppLog.Enabled && (foregroundChanged || (_hasLastIme && _lastChinese != result.Chinese)))
+        {
+            AppLog.Write(
+                $"ime: fg=0x{foreground.ToInt64():X} cls={GetClassName(foreground)} " +
+                $"hwnd=0x{result.Hwnd.ToInt64():X} ime=0x{result.ImeWnd.ToInt64():X} " +
+                $"opened={result.Opened} conv={result.ConvMode} smto={result.SmtoOk} " +
+                $"cn={result.Chinese} caps={result.Caps} num={result.Num} fgChanged={foregroundChanged}");
+        }
+
+        _hasLastIme = true;
+        _lastChinese = result.Chinese;
+        _imeCache = result;
         _imeCacheAt = now;
         _imeCacheForeground = foreground;
-        return _imeCache.Value;
+        return result.Status;
     }
 
     private string GetClassName(IntPtr hwnd)
