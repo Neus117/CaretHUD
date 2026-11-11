@@ -72,9 +72,6 @@ public sealed class StatusWatcher : IDisposable
 
     public void Start() => _thread.Start();
 
-    /// <summary>兼容模式：禁用 UIA 检测，只识别原生输入框（避免影响部分应用的输入）。</summary>
-    public bool DisableUia { get; set; }
-
     public void Dispose()
     {
         _stop.Set();
@@ -165,8 +162,7 @@ public sealed class StatusWatcher : IDisposable
             return (true, status, caret);
         }
 
-        if (!DisableUia &&
-            UiaClasses.Contains(cls) &&
+        if (UiaClasses.Contains(cls) &&
             UiaCaretLocator.TryGetCaret(foreground, out var uiaCaret) &&
             IsOnScreen(uiaCaret))
         {

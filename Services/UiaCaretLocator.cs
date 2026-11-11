@@ -15,20 +15,11 @@ namespace CaretHUD.Services;
 /// </summary>
 public static class UiaCaretLocator
 {
-    // 自适应限频：查询会跨进程问 Chromium，频率越高输入越容易受影响。
-    // 默认省流模式（500ms）；快速跟随模式（120ms）可能增加输入延迟。
-    private static int ActiveInterval => FastFollow ? 120 : 500;
-    private static int IdleInterval => FastFollow ? 300 : 1500;
+    // 限频：查询会跨进程问 Chromium，频率越高输入越容易受影响。
+    // 光标在动时 500ms 一次，静止时 1500ms（优先保证输入流畅）。
+    private const int ActiveIntervalMs = 500;
+    private const int IdleIntervalMs = 1500;
     private const int KeepOnFailureMs = 800;
-
-    private static volatile bool _fastFollow;
-
-    /// <summary>快速跟随模式：更高频率查询，跟手更好但可能拖慢输入。</summary>
-    public static bool FastFollow
-    {
-        get => _fastFollow;
-        set => _fastFollow = value;
-    }
 
     // 空文档时光标行高的近似值（物理像素；只影响浮窗垂直位置，不影响水平对齐）
     private const int EstimateLineHeight = 32;
@@ -291,7 +282,7 @@ public static class UiaCaretLocator
 
         var newCaret = new Rect(r.X, r.Y, Math.Max(r.Width, 1), r.Height);
         // 光标位置变了 → 用高频；没变 → 降频
-        _queryInterval = newCaret != _lastCaret ? ActiveInterval : IdleInterval;
+        _queryInterval = newCaret != _lastCaret ? ActiveIntervalMs : IdleIntervalMs;
         _lastCaret = newCaret;
         _hasCaret = true;
         _lastSuccess = now;
@@ -306,7 +297,7 @@ public static class UiaCaretLocator
         if (_hasCaret && now - _lastSuccess < KeepOnFailureMs)
         {
             // 焦点元素还在，但这次查询失败：沿用上次结果，避免闪烁
-            _queryInterval = IdleInterval;
+            _queryInterval = IdleIntervalMs;
             caret = _lastCaret;
             return true;
         }
@@ -323,7 +314,7 @@ public static class UiaCaretLocator
     private static bool Fail(out Rect caret, string reason)
     {
         _hasCaret = false;
-        _queryInterval = IdleInterval;
+        _queryInterval = IdleIntervalMs;
         caret = default;
         if (AppLog.Enabled)
             AppLog.Write($"uia: {reason}");

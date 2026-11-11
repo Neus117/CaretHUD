@@ -13,8 +13,9 @@ public partial class App : Application
     private Mutex? _instanceMutex;
     private HudWindow? _hud;
     private TrayIcon? _tray;
+    private TrayMenuWindow? _trayMenu;
+    private AboutWindow? _aboutWindow;
     private StatusWatcher? _watcher;
-    private bool _paused;
     private InputStatus? _lastStatus;
 
     protected override void OnStartup(StartupEventArgs e)
@@ -38,21 +39,34 @@ public partial class App : Application
         var hudHandle = new WindowInteropHelper(_hud).EnsureHandle();
 
         _watcher = new StatusWatcher(hudHandle, OnStatusUpdate);
-        _tray = new TrayIcon(
-            paused =>
-            {
-                _paused = paused;
-                if (paused)
-                    _hud?.Hide();
-            },
-            fast => UiaCaretLocator.FastFollow = fast,
-            disableUia =>
-            {
-                if (_watcher is not null)
-                    _watcher.DisableUia = disableUia;
-            },
-            MemoryTrimmer.Trim);
+        _tray = new TrayIcon();
+        _tray.RightClick += ShowTrayMenu;
         _watcher.Start();
+    }
+
+    private void ShowTrayMenu()
+    {
+        if (_trayMenu is { IsVisible: true })
+        {
+            _trayMenu.Close();
+            return;
+        }
+
+        var pos = System.Windows.Forms.Cursor.Position;
+        _trayMenu = new TrayMenuWindow(ShowAbout, MemoryTrimmer.Trim, () => Shutdown());
+        _trayMenu.ShowAtScreen(pos.X, pos.Y);
+    }
+
+    private void ShowAbout()
+    {
+        if (_aboutWindow is { IsVisible: true })
+        {
+            _aboutWindow.Activate();
+            return;
+        }
+
+        _aboutWindow = new AboutWindow();
+        _aboutWindow.Show();
     }
 
     private void OnStatusUpdate(InputStatus status, Rect? caret)
@@ -60,7 +74,7 @@ public partial class App : Application
         if (_hud is null)
             return;
 
-        if (_paused || caret is null)
+        if (caret is null)
         {
             if (_hud.IsVisible)
                 _hud.Hide();
@@ -81,6 +95,8 @@ public partial class App : Application
 
     protected override void OnExit(ExitEventArgs e)
     {
+        _trayMenu?.Close();
+        _aboutWindow?.Close();
         _watcher?.Dispose();
         _tray?.Dispose();
         _hud?.Close();
