@@ -57,7 +57,7 @@ $env:CARETHUD_LOG = 'C:\temp\carethud.log'
 - UI Automation 查询是跨进程调用，频率越高越可能影响 Chromium 系应用的输入；默认省流模式优先保证输入流畅。
 - 不显示：管理员权限窗口、UWP 应用、全屏独占应用。
 - 多显示器跨 DPI 未实测。
-- 图标 `icon.png` 为占位文件，待替换。
+- 图标：`icon.ico`（16–256 多尺寸），同时用于托盘和 exe。
 
 ## 状态
 

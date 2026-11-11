@@ -31,11 +31,31 @@ internal sealed class TrayIcon : IDisposable
 
         _icon = new NotifyIcon
         {
-            Icon = SystemIcons.Application,
+            Icon = LoadIcon(),
             Text = "CaretHUD 输入状态浮窗",
             Visible = true,
             ContextMenuStrip = menu,
         };
+    }
+
+    private static Icon LoadIcon()
+    {
+        try
+        {
+            var path = Environment.ProcessPath;
+            if (!string.IsNullOrEmpty(path))
+            {
+                var icon = Icon.ExtractAssociatedIcon(path);
+                if (icon is not null)
+                    return icon;
+            }
+        }
+        catch
+        {
+            // 提取失败时退回系统图标
+        }
+
+        return SystemIcons.Application;
     }
 
     public void Dispose()
