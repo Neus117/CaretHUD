@@ -53,6 +53,10 @@ public sealed class StatusWatcher : IDisposable
     private IntPtr _classHwnd;
     private string _className = string.Empty;
 
+    // 标题缓存（仅用于识别桌宠等会导致 UIA 挂起的覆盖层窗口）
+    private IntPtr _titleHwnd;
+    private bool _isDshPet;
+
     // IME 状态缓存（SendMessageTimeout 较慢，按 100ms 降频）
     private ImeReadResult? _imeCache;
     private long _imeCacheAt;
@@ -164,7 +168,8 @@ public sealed class StatusWatcher : IDisposable
             return (true, status, caret);
         }
 
-        if (UiaClasses.Contains(cls) &&
+        // 桌宠等覆盖层窗口的 UIA 查询会挂起，跳过（标题含 dsh-pet）
+        if (UiaClasses.Contains(cls) && !IsDshPetWindow(foreground) &&
             UiaCaretLocator.TryGetCaret(foreground, out var uiaCaret) &&
             IsOnScreen(uiaCaret))
         {
@@ -173,6 +178,18 @@ public sealed class StatusWatcher : IDisposable
         }
 
         return (false, InputStatus.Empty, null);
+    }
+
+    private bool IsDshPetWindow(IntPtr hwnd)
+    {
+        if (hwnd == _titleHwnd)
+            return _isDshPet;
+
+        var buffer = new StringBuilder(256);
+        var title = NativeMethods.GetWindowTextW(hwnd, buffer, buffer.Capacity) > 0 ? buffer.ToString() : string.Empty;
+        _isDshPet = title.Contains("dsh-pet", StringComparison.OrdinalIgnoreCase);
+        _titleHwnd = hwnd;
+        return _isDshPet;
     }
 
     private InputStatus GetImeStatus(IntPtr foreground, IntPtr focusWindow)
