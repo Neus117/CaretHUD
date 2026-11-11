@@ -15,7 +15,7 @@ public sealed class StatusWatcher : IDisposable
     private const int PollIntervalMs = 30;
     private const int ImeCacheMs = 100;
     private const int MemoryCheckTicks = 6000;      // 约 3 分钟
-    private const int MemoryTrimThresholdMb = 150;  // 超过则清理（启动约 108MB，留出正常波动余量）
+    private const int MemoryTrimThresholdMb = 120;  // 超过则清理（启动约 108MB，留正常波动余量）
 
     private static readonly HashSet<string> IgnoredClasses = new(StringComparer.OrdinalIgnoreCase)
     {
