@@ -119,6 +119,9 @@ internal static class NativeMethods
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     public static extern int GetWindowTextW(IntPtr hWnd, StringBuilder lpString, int nMaxCount);
 
+    [DllImport("oleacc.dll")]
+    public static extern int AccessibleObjectFromWindow(IntPtr hwnd, uint id, ref Guid riid, out IntPtr ppvObject);
+
     public static (bool Ok, int Value) SendMessageTimeoutInt(IntPtr hWnd, int msg, int wParam)
     {
         var signaled = SendMessageTimeout(hWnd, (uint)msg, (IntPtr)wParam, IntPtr.Zero, SMTO_ABORTIFHUNG, 100, out var result);

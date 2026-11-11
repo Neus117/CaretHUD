@@ -12,7 +12,7 @@ namespace CaretHUD.Services;
 /// </summary>
 public sealed class StatusWatcher : IDisposable
 {
-    private const int PollIntervalMs = 30;
+    private const int PollIntervalMs = 50;
     private const int ImeCacheMs = 100;
     private const int MemoryCheckTicks = 6000;      // 约 3 分钟
     private const int MemoryTrimThresholdMb = 120;  // 超过则清理（启动约 108MB，留正常波动余量）
@@ -170,12 +170,21 @@ public sealed class StatusWatcher : IDisposable
             return (true, status, caret);
         }
 
+        // MSAA 兜底：Chromium/Electron（QQ、微信、浏览器）原生 caret 不可用，
+        // 用 AccessibleObjectFromWindow(hwnd, OBJID_CARET) 取光标（与 ImTip 相同路线）。
+        var msaaHwnd = focusWindow != IntPtr.Zero ? focusWindow : foreground;
+        if (MsaaCaretLocator.TryGetCaret(msaaHwnd, out var msaaCaret) && IsOnScreen(msaaCaret))
+        {
+            var status = GetImeStatus(foreground, msaaHwnd);
+            return (true, status, msaaCaret);
+        }
+
         // 桌宠等覆盖层窗口的 UIA 查询会挂起，跳过（标题含 dsh-pet）
         if (UiaClasses.Contains(cls) && !IsDshPetWindow(foreground) &&
             UiaCaretLocator.TryGetCaret(foreground, out var uiaCaret) &&
             IsOnScreen(uiaCaret))
         {
-            var status = GetImeStatus(foreground, IntPtr.Zero);
+            var status = GetImeStatus(foreground, focusWindow);
             return (true, status, uiaCaret);
         }
 
