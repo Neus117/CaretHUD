@@ -26,7 +26,13 @@
 
 ## 怎么运行
 
-需要 Windows 10/11 和 .NET 10 SDK。
+### 下载即用（推荐）
+
+到 [Releases](https://github.com/Neus117/CaretHUD/releases) 下载最新版 `CaretHUD.exe`，双击运行即可（Windows 10/11，免安装 .NET）。
+
+### 从源码运行
+
+需要 .NET 10 SDK。
 
 1. 从 https://dot.net 下载并安装 .NET 10 SDK（Windows 版）。
 2. 在项目目录里执行：
