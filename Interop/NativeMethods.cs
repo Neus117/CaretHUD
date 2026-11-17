@@ -7,9 +7,11 @@ internal static class NativeMethods
 {
     // 窗口扩展样式
     public const int GWL_EXSTYLE = -20;
+    public const int GWL_STYLE = -16;
     public const int WS_EX_TOOLWINDOW = 0x00000080;
     public const int WS_EX_NOACTIVATE = 0x08000000;
     public const int WS_EX_TRANSPARENT = 0x00000020;
+    public const int WS_EX_TOPMOST = 0x00000008;
 
     // IME
     public const int WM_IME_CONTROL = 0x0283;
@@ -25,8 +27,29 @@ internal static class NativeMethods
 
     // SetWindowPos 标志
     public const uint SWP_NOSIZE = 0x0001;
+    public const uint SWP_NOMOVE = 0x0002;
+    public const uint SWP_NOZORDER = 0x0004;
     public const uint SWP_NOACTIVATE = 0x0010;
     public static readonly IntPtr HWND_TOPMOST = new(-1);
+
+    // WinEvent
+    public const uint EVENT_SYSTEM_FOREGROUND = 0x0003;
+    public const uint EVENT_OBJECT_FOCUS = 0x8005;
+    public const uint EVENT_OBJECT_LOCATIONCHANGE = 0x800B;
+    public const int OBJID_WINDOW = 0;
+    public const int OBJID_CARET = -8;              // 0xFFFFFFF8
+    public const int CHILDID_SELF = 0;
+    public const uint WINEVENT_OUTOFCONTEXT = 0x0000;
+    public const uint WINEVENT_SKIPOWNPROCESS = 0x0002;
+
+    // 消息
+    public const uint PM_REMOVE = 0x0001;
+    public const uint QS_ALLINPUT = 0x04FF;
+    public const uint WAIT_OBJECT_0 = 0x00000000;
+
+    public delegate void WinEventProc(
+        IntPtr hWinEventHook, uint eventType, IntPtr hwnd,
+        int idObject, int idChild, uint dwEventThread, uint dwmsEventTime);
 
     [StructLayout(LayoutKind.Sequential)]
     public struct RECT
@@ -61,6 +84,17 @@ internal static class NativeMethods
         public RECT rcCaret;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    public struct MSG
+    {
+        public IntPtr hwnd;
+        public uint message;
+        public IntPtr wParam;
+        public IntPtr lParam;
+        public uint time;
+        public POINT pt;
+    }
+
     [DllImport("user32.dll")]
     public static extern IntPtr GetForegroundWindow();
 
@@ -77,6 +111,9 @@ internal static class NativeMethods
 
     [DllImport("user32.dll")]
     public static extern short GetKeyState(int nVirtKey);
+
+    [DllImport("user32.dll")]
+    public static extern short GetAsyncKeyState(int nVirtKey);
 
     [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")]
     public static extern IntPtr GetWindowLongPtr(IntPtr hWnd, int nIndex);
@@ -122,9 +159,36 @@ internal static class NativeMethods
     [DllImport("oleacc.dll")]
     public static extern int AccessibleObjectFromWindow(IntPtr hwnd, uint id, ref Guid riid, out IntPtr ppvObject);
 
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern IntPtr SetWinEventHook(
+        uint eventMin, uint eventMax, IntPtr hmodWinEventProc,
+        WinEventProc lpfnWinEventProc, uint idProcess, uint idThread, uint dwFlags);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool UnhookWinEvent(IntPtr hWinEventHook);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool PeekMessage(out MSG lpMsg, IntPtr hWnd, uint wMsgFilterMin, uint wMsgFilterMax, uint wRemoveMsg);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool TranslateMessage(ref MSG lpMsg);
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr DispatchMessage(ref MSG lpMsg);
+
+    [DllImport("user32.dll")]
+    public static extern uint MsgWaitForMultipleObjects(
+        uint nCount, IntPtr[] pHandles, [MarshalAs(UnmanagedType.Bool)] bool bWaitAll,
+        uint dwMilliseconds, uint dwWakeMask);
+
     public static (bool Ok, int Value) SendMessageTimeoutInt(IntPtr hWnd, int msg, int wParam)
     {
-        var signaled = SendMessageTimeout(hWnd, (uint)msg, (IntPtr)wParam, IntPtr.Zero, SMTO_ABORTIFHUNG, 100, out var result);
+        var signaled = SendMessageTimeout(
+            hWnd, (uint)msg, (IntPtr)wParam, IntPtr.Zero, SMTO_ABORTIFHUNG, 100, out var result);
         return (signaled != IntPtr.Zero, (int)result);
     }
 }
+

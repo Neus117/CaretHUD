@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text;
 using System.Windows;
 using System.Windows.Threading;
@@ -7,15 +8,22 @@ using CaretHUD.Models;
 namespace CaretHUD.Services;
 
 /// <summary>
-/// 前台窗口与插入点的轮询器。全部检测在专用后台线程完成，
-/// UI 线程只接收"最新状态"并移动浮窗；UI 更新按版本合并，积压时只应用最新一条。
+/// 前台窗口与插入点的检测器。全部检测在专用后台线程完成，UI 线程只接收"最新状态"。
+///
+/// 结构：
+/// - 用 WinEvent 钩子（前台切换 / 焦点变化 / 光标移动）拿事件，事件到了立刻检测一次；
+/// - 定时唤醒只做轻量兜底（Chromium 系 120ms，有光标 150ms，其它 500ms）；
+/// - 昂贵的跨进程查询各自带缓存与退避：MSAA 100ms 缓存 + 失败退避，UIA 只在 Word 上异步取。
+/// 实测：Chromium 单次 MSAA ~1ms（目标进程 CPU ~0.6ms），UIA 单次 20~75ms —— 所以 UIA 不允许出现在轮询里。
 /// </summary>
 public sealed class StatusWatcher : IDisposable
 {
-    private const int PollIntervalMs = 50;
-    private const int ImeCacheMs = 100;
-    private const int MemoryCheckTicks = 6000;      // 约 3 分钟
-    private const int MemoryTrimThresholdMb = 120;  // 超过则清理（启动约 108MB，留正常波动余量）
+    private const int IdlePollMs = 500;
+    private const int CaretPollMs = 150;
+    private const int ChromiumPollMs = 120;
+    private const int MinDetectGapMs = 8;
+    private const int ImeCacheMs = 150;
+    private const int StatsIntervalMs = 10_000;
 
     private static readonly HashSet<string> IgnoredClasses = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -27,9 +35,8 @@ public sealed class StatusWatcher : IDisposable
         "Windows.UI.Core.CoreWindow",
     };
 
-    // 这些窗口的输入控件不是原生 Edit，GetGUIThreadInfo 拿不到插入点或延迟很大，需要 UIA 兜底
-    // （Word 官方建议用 UIA 获取插入点，GetGUIThreadInfo 在 Word 激活后有 1~2 秒延迟）
-    private static readonly HashSet<string> UiaClasses = new(StringComparer.OrdinalIgnoreCase)
+    // Chromium 系没有原生 caret，必须靠 MSAA 取；这类窗口按 120ms 兜底轮询
+    private static readonly HashSet<string> ChromiumClasses = new(StringComparer.OrdinalIgnoreCase)
     {
         "Chrome_WidgetWin_1",
         "Chrome_WidgetWin_0",
@@ -38,33 +45,56 @@ public sealed class StatusWatcher : IDisposable
         "OpusApp",
     };
 
+    // UIA 只给 Word 用（Word 官方建议 UIA；GetGUIThreadInfo 在 Word 激活后有 1~2 秒延迟）
+    private static readonly HashSet<string> UiaClasses = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "OpusApp",
+    };
+
     private readonly Thread _thread;
     private readonly ManualResetEvent _stop = new(false);
+    private readonly AutoResetEvent _wake = new(false);
     private readonly Dispatcher _dispatcher;
     private readonly Action<InputStatus, Rect?> _onUpdate;
     private readonly IntPtr _ownHudHandle;
 
-    private readonly object _pendingLock = new();
-    private (InputStatus Status, Rect? Caret) _pending;
-    private long _pendingVersion;
+    private NativeMethods.WinEventProc? _hookProc;
+    private IntPtr _hookForeground;
+    private IntPtr _hookFocus;
+    private IntPtr _hookLocation;
 
-    // 类名缓存：前台窗口不变时避免每 tick 分配
+    private volatile bool _dirty;
+    private long _lastDetectAt;
+    private long _nextPollAt;
+
+    // 类名缓存
     private readonly StringBuilder _classBuffer = new(256);
     private IntPtr _classHwnd;
     private string _className = string.Empty;
 
-    // 标题缓存（仅用于识别桌宠等会导致 UIA 挂起的覆盖层窗口）
-    private IntPtr _titleHwnd;
-    private bool _isDshPet;
-
-    // IME 状态缓存（SendMessageTimeout 较慢，按 100ms 降频）
+    // IME 缓存（SendMessageTimeout 跨进程，按 150ms 降频）
     private ImeReadResult? _imeCache;
     private long _imeCacheAt;
     private IntPtr _imeCacheForeground;
-    private bool _hasLastIme;
-    private bool _lastChinese;
+    private IntPtr _imeCacheFocus;
     private InputStatus _lastValidIme = InputStatus.Empty;
     private bool _hasValidIme;
+    private IntPtr _lastValidImeForeground;
+
+    // 上一次发布的状态
+    private bool _lastVisible;
+    private InputStatus _lastStatus = InputStatus.Empty;
+    private Rect? _lastCaret;
+
+    // 统计（仅在开启日志时输出）
+    private long _statAt;
+    private int _statTicks;
+    private long _statDetectUsSum;
+    private long _statDetectUsMax;
+    private int _statDetect;
+    private int _statSlow5;
+    private int _statSlow20;
+    private int _statPublishes;
 
     public StatusWatcher(IntPtr ownHudHandle, Action<InputStatus, Rect?> onUpdate)
     {
@@ -78,169 +108,252 @@ public sealed class StatusWatcher : IDisposable
         };
     }
 
-    public void Start() => _thread.Start();
+    public void Start()
+    {
+        UiaCaretLocator.Start();
+        _thread.Start();
+    }
 
     public void Dispose()
     {
         _stop.Set();
-        // 线程在超时内没退出时不要释放事件，避免它继续 WaitOne 时抛异常（进程退出时由系统回收）
-        if (_thread.Join(1000))
+        _wake.Set();
+        if (_thread.Join(1200))
+        {
             _stop.Dispose();
+            _wake.Dispose();
+        }
     }
 
     private void Run()
     {
-        AppLog.Write("watcher started (background thread)");
-        var lastVisible = false;
-        var lastStatus = InputStatus.Empty;
-        Rect? lastCaret = null;
-        var tick = 0;
+        _hookProc = OnWinEvent;
+        _hookForeground = NativeMethods.SetWinEventHook(
+            NativeMethods.EVENT_SYSTEM_FOREGROUND, NativeMethods.EVENT_SYSTEM_FOREGROUND,
+            IntPtr.Zero, _hookProc, 0, 0,
+            NativeMethods.WINEVENT_OUTOFCONTEXT | NativeMethods.WINEVENT_SKIPOWNPROCESS);
+        _hookFocus = NativeMethods.SetWinEventHook(
+            NativeMethods.EVENT_OBJECT_FOCUS, NativeMethods.EVENT_OBJECT_FOCUS,
+            IntPtr.Zero, _hookProc, 0, 0,
+            NativeMethods.WINEVENT_OUTOFCONTEXT | NativeMethods.WINEVENT_SKIPOWNPROCESS);
+        _hookLocation = NativeMethods.SetWinEventHook(
+            NativeMethods.EVENT_OBJECT_LOCATIONCHANGE, NativeMethods.EVENT_OBJECT_LOCATIONCHANGE,
+            IntPtr.Zero, _hookProc, 0, 0,
+            NativeMethods.WINEVENT_OUTOFCONTEXT | NativeMethods.WINEVENT_SKIPOWNPROCESS);
 
-        while (!_stop.WaitOne(PollIntervalMs))
+        AppLog.Write(
+            $"watcher started hooks={(_hookForeground != IntPtr.Zero ? 1 : 0)}{(_hookFocus != IntPtr.Zero ? 1 : 0)}{(_hookLocation != IntPtr.Zero ? 1 : 0)}");
+
+        var handles = new[]
         {
-            // 定期内存清理（防御长时间运行后缓慢上涨）
-            if (++tick >= MemoryCheckTicks)
+            _stop.SafeWaitHandle.DangerousGetHandle(),
+            _wake.SafeWaitHandle.DangerousGetHandle(),
+        };
+
+        DrainMessages();
+        _nextPollAt = Environment.TickCount64;
+        _statAt = _nextPollAt;
+
+        try
+        {
+            while (true)
             {
-                tick = 0;
-                var ws = MemoryTrimmer.CurrentWorkingSetMb;
-                if (ws > MemoryTrimThresholdMb)
-                {
-                    MemoryTrimmer.Trim();
-                    if (AppLog.Enabled)
-                        AppLog.Write($"memory trim: {ws}MB -> {MemoryTrimmer.CurrentWorkingSetMb}MB");
-                }
+                var now = Environment.TickCount64;
+                // 有事件待处理时只等到合并窗口结束；否则等到下一次兜底轮询
+                var waitMs = _dirty
+                    ? Math.Clamp(_lastDetectAt + MinDetectGapMs - now, 1, IdlePollMs)
+                    : Math.Clamp(_nextPollAt - now, 1, IdlePollMs);
+
+                var r = NativeMethods.MsgWaitForMultipleObjects(
+                    2, handles, false, (uint)waitMs, NativeMethods.QS_ALLINPUT);
+
+                if (r == NativeMethods.WAIT_OBJECT_0)
+                    break;
+                if (r == NativeMethods.WAIT_OBJECT_0 + 2)
+                    DrainMessages();
+                else if (r == NativeMethods.WAIT_OBJECT_0 + 1)
+                    _wake.Reset();
+
+                now = Environment.TickCount64;
+                var due = now >= _nextPollAt;
+                if (!_dirty && !due)
+                    continue;
+                if (now - _lastDetectAt < MinDetectGapMs)
+                    continue;
+
+                _dirty = false;
+                _lastDetectAt = now;
+                DetectAndPublish(now);
+                EmitStatsIfDue(now);
             }
-
-            var (visible, status, caret) = Detect();
-
-            if (visible == lastVisible && status == lastStatus && caret == lastCaret)
-                continue;
-
-            lastVisible = visible;
-            lastStatus = status;
-            lastCaret = caret;
-
-            if (AppLog.Enabled)
-            {
-                AppLog.Write(
-                    $"visible={visible} caret={(caret is { } c ? $"{c.Left:0},{c.Top:0},{c.Width:0}x{c.Height:0}" : "none")} " +
-                    $"cn={status.IsChinese} caps={status.CapsLock} num={status.NumLock}");
-            }
-
-            Publish(status, visible ? caret : null);
         }
+        finally
+        {
+            if (_hookLocation != IntPtr.Zero) NativeMethods.UnhookWinEvent(_hookLocation);
+            if (_hookFocus != IntPtr.Zero) NativeMethods.UnhookWinEvent(_hookFocus);
+            if (_hookForeground != IntPtr.Zero) NativeMethods.UnhookWinEvent(_hookForeground);
+        }
+    }
+
+    private void OnWinEvent(
+        IntPtr hook, uint eventType, IntPtr hwnd, int idObject, int idChild, uint thread, uint time)
+    {
+        // 只有"光标移动"这一类位置变化值得立即检测；窗口移动也发 LOCATIONCHANGE，按 idObject 过滤
+        if (eventType == NativeMethods.EVENT_OBJECT_LOCATIONCHANGE && idObject != NativeMethods.OBJID_CARET)
+            return;
+
+        _dirty = true;
+        _wake.Set();
+    }
+
+    private static void DrainMessages()
+    {
+        while (NativeMethods.PeekMessage(
+                   out var msg, IntPtr.Zero, 0, 0, NativeMethods.PM_REMOVE))
+        {
+            NativeMethods.TranslateMessage(ref msg);
+            NativeMethods.DispatchMessage(ref msg);
+        }
+    }
+
+    private void DetectAndPublish(long now)
+    {
+        _statTicks++;
+        var sw = Stopwatch.StartNew();
+
+        var (visible, status, caret, cls) = Detect();
+        var us = sw.ElapsedTicks * 1_000_000 / Stopwatch.Frequency;
+        _statDetect++;
+        _statDetectUsSum += us;
+        if (us > _statDetectUsMax) _statDetectUsMax = us;
+        if (us > 5000) _statSlow5++;
+        if (us > 20000) _statSlow20++;
+
+        _nextPollAt = now + PollInterval(cls, visible);
+
+        if (visible == _lastVisible && status == _lastStatus && caret == _lastCaret)
+            return;
+
+        _lastVisible = visible;
+        _lastStatus = status;
+        _lastCaret = caret;
+        _statPublishes++;
+
+        if (AppLog.Enabled)
+        {
+            AppLog.Write(
+                $"visible={visible} caret={(caret is { } c ? $"{c.Left:0},{c.Top:0},{c.Width:0}x{c.Height:0}" : "none")} " +
+                $"cn={status.IsChinese} caps={status.CapsLock} num={status.NumLock} cls={cls} detect={us}us");
+        }
+
+        Publish(status, visible ? caret : null);
+    }
+
+    private void EmitStatsIfDue(long now)
+    {
+        if (!AppLog.Enabled || now - _statAt < StatsIntervalMs)
+            return;
+
+        _statAt = now;
+        var avg = _statDetect > 0 ? _statDetectUsSum / _statDetect : 0;
+        AppLog.Write(
+            $"stat: ticks={_statTicks} detect={_statDetect} avg={avg}us max={_statDetectUsMax}us " +
+            $">5ms={_statSlow5} >20ms={_statSlow20} msaa={MsaaCaretLocator.CallCount} " +
+            $"msaa_fail={MsaaCaretLocator.FailCount} ime={_imeReads} publishes={_statPublishes}");
+        _statTicks = 0;
+        _statDetect = 0;
+        _statDetectUsSum = 0;
+        _statDetectUsMax = 0;
+        _statSlow5 = 0;
+        _statSlow20 = 0;
+        _statPublishes = 0;
+        _imeReads = 0;
+    }
+
+    private static int PollInterval(string cls, bool caretVisible)
+    {
+        if (ChromiumClasses.Contains(cls))
+            return ChromiumPollMs;
+        return caretVisible ? CaretPollMs : IdlePollMs;
+    }
+
+    private (bool Visible, InputStatus Status, Rect? Caret, string Class) Detect()
+    {
+        var foreground = NativeMethods.GetForegroundWindow();
+        if (foreground == IntPtr.Zero || foreground == _ownHudHandle)
+            return (false, InputStatus.Empty, null, string.Empty);
+
+        var cls = GetClassName(foreground);
+        if (cls.Length == 0 || IgnoredClasses.Contains(cls))
+            return (false, InputStatus.Empty, null, cls);
+
+        // 1) 原生 caret：本地内核调用，µs 级
+        if (CaretLocator.TryGetCaret(foreground, out var focusWindow, out var caret))
+            return (true, GetImeStatus(foreground, focusWindow), caret, cls);
+
+        // 2) MSAA：Chromium / Electron（本地缓存 + 退避，单次 ~1ms）
+        if (MsaaCaretLocator.TryGetCaret(foreground, focusWindow, out var msaaCaret) && IsOnScreen(msaaCaret))
+            return (true, GetImeStatus(foreground, focusWindow), msaaCaret, cls);
+
+        // 3) UIA：Word 直接走；Chromium 只在 MSAA 连续失败后兜底（异步取最近结果，绝不阻塞本线程）
+        var uiaAllowed = UiaClasses.Contains(cls) ||
+                         (ChromiumClasses.Contains(cls) && MsaaCaretLocator.FailStreak >= 3);
+        if (uiaAllowed &&
+            UiaCaretLocator.TryGetCaret(foreground, out var uiaCaret) &&
+            IsOnScreen(uiaCaret))
+        {
+            return (true, GetImeStatus(foreground, focusWindow), uiaCaret, cls);
+        }
+
+        return (false, InputStatus.Empty, null, cls);
+    }
+
+    private int _imeReads;
+
+    private InputStatus GetImeStatus(IntPtr foreground, IntPtr focusWindow)
+    {
+        var now = Environment.TickCount64;
+
+        ImeReadResult result;
+        if (_imeCache is { } cached &&
+            _imeCacheForeground == foreground && _imeCacheFocus == focusWindow &&
+            now - _imeCacheAt < ImeCacheMs)
+        {
+            result = cached;
+        }
+        else
+        {
+            result = ImeStateReader.Read(foreground, focusWindow);
+            _imeReads++;
+            if (result.SmtoOk)
+            {
+                _lastValidIme = new InputStatus(result.Chinese, false, true, 0);
+                _hasValidIme = true;
+                _lastValidImeForeground = foreground;
+            }
+            _imeCache = result;
+            _imeCacheAt = now;
+            _imeCacheForeground = foreground;
+            _imeCacheFocus = focusWindow;
+        }
+
+        // 查询超时（目标 UI 线程忙）时沿用同一窗口上一次有效状态，避免中英误判
+        var chinese = result.SmtoOk
+            ? result.Chinese
+            : (_hasValidIme && _lastValidImeForeground == foreground && _lastValidIme.IsChinese);
+
+        // 用 GetAsyncKeyState：GetKeyState 依赖本线程消息队列，后台线程拿到的锁键状态可能滞后
+        var caps = (NativeMethods.GetAsyncKeyState(NativeMethods.VK_CAPITAL) & 1) != 0;
+        var num = (NativeMethods.GetAsyncKeyState(NativeMethods.VK_NUMLOCK) & 1) != 0;
+
+        return new InputStatus(chinese, caps, num, 0);
     }
 
     /// <summary>把最新状态推给 UI 线程；若 UI 处理不过来，中间更新会被跳过。</summary>
     private void Publish(InputStatus status, Rect? caret)
     {
-        long version;
-        lock (_pendingLock)
-        {
-            _pending = (status, caret);
-            version = ++_pendingVersion;
-        }
-
-        _dispatcher.BeginInvoke(DispatcherPriority.Render, () =>
-        {
-            (InputStatus Status, Rect? Caret) snapshot;
-            lock (_pendingLock)
-            {
-                // 已经有更新的状态在排队，本条跳过
-                if (_pendingVersion != version)
-                    return;
-                snapshot = _pending;
-            }
-
-            _onUpdate(snapshot.Status, snapshot.Caret);
-        });
+        _dispatcher.BeginInvoke(DispatcherPriority.Render, () => _onUpdate(status, caret));
     }
-
-    private (bool Visible, InputStatus Status, Rect? Caret) Detect()
-    {
-        var foreground = NativeMethods.GetForegroundWindow();
-
-        var cls = GetClassName(foreground);
-        if (cls.Length == 0 || foreground == _ownHudHandle || IgnoredClasses.Contains(cls))
-            return (false, InputStatus.Empty, null);
-
-        if (CaretLocator.TryGetCaret(foreground, out var focusWindow, out var caret))
-        {
-            var status = GetImeStatus(foreground, focusWindow);
-            return (true, status, caret);
-        }
-
-        // MSAA 兜底：Chromium/Electron（QQ、微信、浏览器）原生 caret 不可用，
-        // 用 AccessibleObjectFromWindow(hwnd, OBJID_CARET) 取光标（与 ImTip 相同路线）。
-        var msaaHwnd = focusWindow != IntPtr.Zero ? focusWindow : foreground;
-        if (MsaaCaretLocator.TryGetCaret(msaaHwnd, out var msaaCaret) && IsOnScreen(msaaCaret))
-        {
-            var status = GetImeStatus(foreground, msaaHwnd);
-            return (true, status, msaaCaret);
-        }
-
-        // 桌宠等覆盖层窗口的 UIA 查询会挂起，跳过（标题含 dsh-pet）
-        if (UiaClasses.Contains(cls) && !IsDshPetWindow(foreground) &&
-            UiaCaretLocator.TryGetCaret(foreground, out var uiaCaret) &&
-            IsOnScreen(uiaCaret))
-        {
-            var status = GetImeStatus(foreground, focusWindow);
-            return (true, status, uiaCaret);
-        }
-
-        return (false, InputStatus.Empty, null);
-    }
-
-    private bool IsDshPetWindow(IntPtr hwnd)
-    {
-        if (hwnd == _titleHwnd)
-            return _isDshPet;
-
-        var buffer = new StringBuilder(256);
-        var title = NativeMethods.GetWindowTextW(hwnd, buffer, buffer.Capacity) > 0 ? buffer.ToString() : string.Empty;
-        _isDshPet = title.Contains("dsh-pet", StringComparison.OrdinalIgnoreCase);
-        _titleHwnd = hwnd;
-        return _isDshPet;
-    }
-
-    private InputStatus GetImeStatus(IntPtr foreground, IntPtr focusWindow)
-    {
-        var now = Environment.TickCount64;
-        var foregroundChanged = _imeCacheForeground != foreground;
-
-        if (_imeCache is { } cached && !foregroundChanged && now - _imeCacheAt < ImeCacheMs)
-            return ResolveIme(cached);
-
-        var result = ImeStateReader.Read(foreground, focusWindow);
-        if (result.SmtoOk)
-        {
-            _lastValidIme = result.Status;
-            _hasValidIme = true;
-        }
-
-        var status = ResolveIme(result);
-
-        // 诊断日志：前台变化或解析后状态跳变时输出原始返回值
-        if (AppLog.Enabled && (foregroundChanged || (_hasLastIme && _lastChinese != status.IsChinese)))
-        {
-            AppLog.Write(
-                $"ime: fg=0x{foreground.ToInt64():X} cls={GetClassName(foreground)} " +
-                $"hwnd=0x{result.Hwnd.ToInt64():X} ime=0x{result.ImeWnd.ToInt64():X} " +
-                $"opened={result.Opened} conv={result.ConvMode} smto={result.SmtoOk} " +
-                $"cn={status.IsChinese} (raw={result.Chinese}) caps={status.CapsLock} num={status.NumLock} fgChanged={foregroundChanged}");
-        }
-
-        _hasLastIme = true;
-        _lastChinese = status.IsChinese;
-        _imeCache = result;
-        _imeCacheAt = now;
-        _imeCacheForeground = foreground;
-        return status;
-    }
-
-    /// <summary>查询超时（目标 UI 线程忙）时沿用上一次有效状态，避免误判为中英切换。</summary>
-    private InputStatus ResolveIme(ImeReadResult result)
-        => result.SmtoOk || !_hasValidIme ? result.Status : _lastValidIme;
 
     private string GetClassName(IntPtr hwnd)
     {
@@ -266,3 +379,5 @@ public sealed class StatusWatcher : IDisposable
                r.Top >= vsTop - slack && r.Bottom <= vsBottom + slack;
     }
 }
+
+
