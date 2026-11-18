@@ -112,8 +112,7 @@ internal static class NativeMethods
     [DllImport("user32.dll")]
     public static extern short GetKeyState(int nVirtKey);
 
-    [DllImport("user32.dll")]
-    public static extern short GetAsyncKeyState(int nVirtKey);
+
 
     [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")]
     public static extern IntPtr GetWindowLongPtr(IntPtr hWnd, int nIndex);
@@ -191,4 +190,5 @@ internal static class NativeMethods
         return (signaled != IntPtr.Zero, (int)result);
     }
 }
+
 

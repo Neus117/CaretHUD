@@ -342,9 +342,11 @@ public sealed class StatusWatcher : IDisposable
             ? result.Chinese
             : (_hasValidIme && _lastValidImeForeground == foreground && _lastValidIme.IsChinese);
 
-        // 用 GetAsyncKeyState：GetKeyState 依赖本线程消息队列，后台线程拿到的锁键状态可能滞后
-        var caps = (NativeMethods.GetAsyncKeyState(NativeMethods.VK_CAPITAL) & 1) != 0;
-        var num = (NativeMethods.GetAsyncKeyState(NativeMethods.VK_NUMLOCK) & 1) != 0;
+        // 锁键状态只能用 GetKeyState 的低位（toggle 状态）；GetAsyncKeyState 的低位是"自上次调用以来是否按过"，
+        // 在轮询里几乎永远读到 0（实测 NumLock 开着也返回 0，小键盘标记一直是"已禁用"）。
+        // 本线程现在有消息泵（MsgWaitForMultipleObjects + PeekMessage），锁键状态会及时刷新。
+        var caps = (NativeMethods.GetKeyState(NativeMethods.VK_CAPITAL) & 1) != 0;
+        var num = (NativeMethods.GetKeyState(NativeMethods.VK_NUMLOCK) & 1) != 0;
 
         return new InputStatus(chinese, caps, num, 0);
     }
@@ -379,5 +381,6 @@ public sealed class StatusWatcher : IDisposable
                r.Top >= vsTop - slack && r.Bottom <= vsBottom + slack;
     }
 }
+
 
 
