@@ -19,8 +19,15 @@ namespace CaretHUD.Services;
 public sealed class StatusWatcher : IDisposable
 {
     private const int IdlePollMs = 500;
-    private const int CaretPollMs = 150;
-    private const int ChromiumPollMs = 120;
+    private const int CaretPollMs = 200;
+    private const int ChromiumPollMs = 150;
+
+    // 打字突发（最近 500ms 内有任何键盘/鼠标输入）时加速采样，把"跟手延迟"压到一个屏幕帧量级
+    private const int BurstWindowMs = 500;
+    private const int BurstPollMs = 40;
+    private const int BurstChromiumPollMs = 40;
+    private const int MsaaCacheIdleMs = 120;
+    private const int MsaaCacheBurstMs = 25;
     private const int MinDetectGapMs = 8;
     private const int ImeCacheMs = 150;
     private const int StatsIntervalMs = 10_000;
@@ -183,7 +190,10 @@ public sealed class StatusWatcher : IDisposable
 
                 _dirty = false;
                 _lastDetectAt = now;
-                DetectAndPublish(now);
+                var idleMs = unchecked((uint)(Environment.TickCount - LastInputTick()));
+                var bursting = idleMs < BurstWindowMs;
+                MsaaCaretLocator.CacheMs = bursting ? MsaaCacheBurstMs : MsaaCacheIdleMs;
+                DetectAndPublish(now, bursting);
                 EmitStatsIfDue(now);
             }
         }
@@ -216,7 +226,16 @@ public sealed class StatusWatcher : IDisposable
         }
     }
 
-    private void DetectAndPublish(long now)
+    private static uint LastInputTick()
+    {
+        var lii = new NativeMethods.LASTINPUTINFO
+        {
+            cbSize = (uint)System.Runtime.InteropServices.Marshal.SizeOf<NativeMethods.LASTINPUTINFO>(),
+        };
+        return NativeMethods.GetLastInputInfo(ref lii) ? lii.dwTime : 0;
+    }
+
+    private void DetectAndPublish(long now, bool bursting)
     {
         _statTicks++;
         var sw = Stopwatch.StartNew();
@@ -229,7 +248,7 @@ public sealed class StatusWatcher : IDisposable
         if (us > 5000) _statSlow5++;
         if (us > 20000) _statSlow20++;
 
-        _nextPollAt = now + PollInterval(cls, visible);
+        _nextPollAt = now + PollInterval(cls, visible, bursting);
 
         if (visible == _lastVisible && status == _lastStatus && caret == _lastCaret)
             return;
@@ -270,10 +289,12 @@ public sealed class StatusWatcher : IDisposable
         _imeReads = 0;
     }
 
-    private static int PollInterval(string cls, bool caretVisible)
+    private static int PollInterval(string cls, bool caretVisible, bool bursting)
     {
         if (ChromiumClasses.Contains(cls))
-            return ChromiumPollMs;
+            return bursting ? BurstChromiumPollMs : ChromiumPollMs;
+        if (bursting)
+            return BurstPollMs;
         return caretVisible ? CaretPollMs : IdlePollMs;
     }
 
@@ -381,6 +402,9 @@ public sealed class StatusWatcher : IDisposable
                r.Top >= vsTop - slack && r.Bottom <= vsBottom + slack;
     }
 }
+
+
+
 
 
 

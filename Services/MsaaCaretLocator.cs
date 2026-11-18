@@ -17,7 +17,8 @@ namespace CaretHUD.Services;
 public static class MsaaCaretLocator
 {
     private const uint ObjidCaret = 0xFFFFFFF8;
-    private const int CacheMs = 100;
+    /// <summary>成功结果的缓存时长；打字突发时由检测线程调小（默认 120ms，突发 40ms）。</summary>
+    public static volatile int CacheMs = 120;
     private const int KeepOnFailureMs = 600;
     private const int FirstRetryMs = 250;
     private const int MaxRetryMs = 2000;
@@ -31,8 +32,18 @@ public static class MsaaCaretLocator
     private static long _cacheAt;
     private static bool _cacheValid;
     private static long _nextAttemptAt;
+    private static bool _forceRefresh;
     private static int _failStreak;
     private static bool _loggedCold;
+
+    /// <summary>光标/焦点变化时调用：下一次查询不吃缓存。</summary>
+    public static void Invalidate()
+    {
+        lock (Gate)
+        {
+            _forceRefresh = true;
+        }
+    }
 
     /// <summary>真实发出的跨进程调用次数（统计用）。</summary>
     public static int CallCount;
@@ -169,3 +180,5 @@ public static class MsaaCaretLocator
         return NativeMethods.GetClassName(hwnd, sb, sb.Capacity) > 0 ? sb.ToString() : string.Empty;
     }
 }
+
+

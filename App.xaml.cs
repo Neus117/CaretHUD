@@ -106,7 +106,7 @@ public partial class App : Application
         if (caret is null)
         {
             if (_hud.IsVisible)
-                _hud.Hide();
+                _hud.HideAnimated();
             return;
         }
 
@@ -118,7 +118,7 @@ public partial class App : Application
         }
 
         if (!_hud.IsVisible)
-            _hud.Show();
+            _hud.ShowAnimated();
         _hud.MoveNear(caret.Value);
     }
 
@@ -141,3 +141,4 @@ public partial class App : Application
         base.OnExit(e);
     }
 }
+

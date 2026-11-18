@@ -1,6 +1,7 @@
 using System.Windows;
 using System.Windows.Interop;
 using System.Windows.Media;
+using System.Windows.Media.Animation;
 using CaretHUD.Interop;
 using CaretHUD.Models;
 using CaretHUD.Services;
@@ -16,6 +17,9 @@ public partial class HudWindow : Window
     private static readonly SolidColorBrush EnglishBrush = CreateFrozen(0xE8, 0xEC, 0xF2);
 
     private bool _needTopmost;
+    private static readonly Duration FadeInDuration = new(TimeSpan.FromMilliseconds(110));
+    private static readonly Duration FadeOutDuration = new(TimeSpan.FromMilliseconds(90));
+
     private int _lastX = int.MinValue;
     private int _lastY = int.MinValue;
 
@@ -54,6 +58,38 @@ public partial class HudWindow : Window
 
         // 数字键盘：开启时不显示任何东西，关闭时才显示提醒标记
         NumBadge.Visibility = status.NumLock ? Visibility.Collapsed : Visibility.Visible;
+    }
+
+    /// <summary>出现时淡入：消除窗口"硬弹出"的突兀感（不改变位置更新时间）。</summary>
+    public void ShowAnimated()
+    {
+        if (IsVisible)
+            return;
+
+        Root.Opacity = 0;
+        Show();
+        Root.BeginAnimation(UIElement.OpacityProperty, new DoubleAnimation(0, 1, FadeInDuration)
+        {
+            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut },
+        });
+    }
+
+    /// <summary>消失时淡出：先做 90ms 透明度动画再隐藏。</summary>
+    public void HideAnimated()
+    {
+        if (!IsVisible)
+            return;
+
+        var fade = new DoubleAnimation(1, 0, FadeOutDuration)
+        {
+            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseIn },
+        };
+        fade.Completed += (_, _) =>
+        {
+            if (Root.Opacity <= 0.01)
+                Hide();
+        };
+        Root.BeginAnimation(UIElement.OpacityProperty, fade);
     }
 
     public void MoveNear(Rect caretScreen)
@@ -130,4 +166,5 @@ public partial class HudWindow : Window
         NativeMethods.SetWindowPos(hwnd, NativeMethods.HWND_TOPMOST, winX, winY, 0, 0, flags);
     }
 }
+
 

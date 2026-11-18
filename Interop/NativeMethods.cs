@@ -112,6 +112,17 @@ internal static class NativeMethods
     [DllImport("user32.dll")]
     public static extern short GetKeyState(int nVirtKey);
 
+    [StructLayout(LayoutKind.Sequential)]
+    public struct LASTINPUTINFO
+    {
+        public uint cbSize;
+        public uint dwTime;
+    }
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool GetLastInputInfo(ref LASTINPUTINFO plii);
+
 
 
     [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")]
@@ -190,5 +201,6 @@ internal static class NativeMethods
         return (signaled != IntPtr.Zero, (int)result);
     }
 }
+
 
 
