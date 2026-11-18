@@ -78,7 +78,7 @@ public static class UiaCaretLocator
             }
 
             // 连续拿不到光标（例如焦点在不可编辑区域）时逐步降频，避免为"看不见"的窗口反复付无障碍的税
-            var interval = MinRequestMs * (1 << Math.Min(Math.Max(_consecutiveMiss - 2, 0), 3));
+            var interval = MinRequestMs * (1 << Math.Min(Math.Max(_consecutiveMiss - 2, 0), 1));
             if (now >= _suspendUntil && _busy == 0 &&
                 (foreground != _requestFg || now - _requestAt >= interval))
             {
@@ -285,5 +285,6 @@ public static class UiaCaretLocator
         }
     }
 }
+
 
 

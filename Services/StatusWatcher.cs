@@ -30,6 +30,8 @@ public sealed class StatusWatcher : IDisposable
     private const int MsaaCacheBurstMs = 25;
     private const int MinDetectGapMs = 8;
     private const int ImeCacheMs = 150;
+    private const int ImeCacheWordMs = 600;      // Word 的 UI 线程很忙，IME 查询别那么频繁
+    private const int HideGraceMs = 800;         // 光标短暂读不到时先别隐藏，避免闪一下
     private const int StatsIntervalMs = 10_000;
 
     private static readonly HashSet<string> IgnoredClasses = new(StringComparer.OrdinalIgnoreCase)
@@ -94,6 +96,10 @@ public sealed class StatusWatcher : IDisposable
     private Rect? _lastCaret;
 
     // 统计（仅在开启日志时输出）
+    private long _lastCaretAt;
+    private IntPtr _lastCaretForeground;
+    private uint _lastCaretPid;
+
     private long _statAt;
     private int _statTicks;
     private long _statDetectUsSum;
@@ -226,6 +232,14 @@ public sealed class StatusWatcher : IDisposable
         }
     }
 
+    private static uint PidOf(IntPtr hwnd)
+    {
+        if (hwnd == IntPtr.Zero)
+            return 0;
+        NativeMethods.GetWindowThreadProcessId(hwnd, out var pid);
+        return pid;
+    }
+
     private static uint LastInputTick()
     {
         var lii = new NativeMethods.LASTINPUTINFO
@@ -240,8 +254,25 @@ public sealed class StatusWatcher : IDisposable
         _statTicks++;
         var sw = Stopwatch.StartNew();
 
-        var (visible, status, caret, cls) = Detect();
+        var (visible, status, caret, cls, foreground) = Detect();
         var us = sw.ElapsedTicks * 1_000_000 / Stopwatch.Frequency;
+
+        // 光标短暂读不到（IME 上屏瞬间、焦点切换瞬间、Word 的弹出层）时先沿用上一次的位置，
+        // 否则浮窗会闪一下再消失——Word 里尤其明显。判定按"同一个进程"而不是同一个窗口：
+        // Word 的状态栏/提示层是另一个 hwnd，但仍属于同一个 Word 进程。
+        if (visible)
+        {
+            _lastCaretAt = now;
+            _lastCaretForeground = foreground;
+            _lastCaretPid = PidOf(foreground);
+        }
+        else if (_lastCaretPid != 0 && PidOf(foreground) == _lastCaretPid && _lastCaret is not null &&
+                 now - _lastCaretAt < HideGraceMs)
+        {
+            visible = true;
+            caret = _lastCaret;
+            status = _lastStatus;
+        }
         _statDetect++;
         _statDetectUsSum += us;
         if (us > _statDetectUsMax) _statDetectUsMax = us;
@@ -298,23 +329,23 @@ public sealed class StatusWatcher : IDisposable
         return caretVisible ? CaretPollMs : IdlePollMs;
     }
 
-    private (bool Visible, InputStatus Status, Rect? Caret, string Class) Detect()
+    private (bool Visible, InputStatus Status, Rect? Caret, string Class, IntPtr Foreground) Detect()
     {
         var foreground = NativeMethods.GetForegroundWindow();
         if (foreground == IntPtr.Zero || foreground == _ownHudHandle)
-            return (false, InputStatus.Empty, null, string.Empty);
+            return (false, InputStatus.Empty, null, string.Empty, foreground);
 
         var cls = GetClassName(foreground);
         if (cls.Length == 0 || IgnoredClasses.Contains(cls))
-            return (false, InputStatus.Empty, null, cls);
+            return (false, InputStatus.Empty, null, cls, foreground);
 
         // 1) 原生 caret：本地内核调用，µs 级
         if (CaretLocator.TryGetCaret(foreground, out var focusWindow, out var caret))
-            return (true, GetImeStatus(foreground, focusWindow), caret, cls);
+            return (true, GetImeStatus(foreground, focusWindow, cls), caret, cls, foreground);
 
         // 2) MSAA：Chromium / Electron（本地缓存 + 退避，单次 ~1ms）
         if (MsaaCaretLocator.TryGetCaret(foreground, focusWindow, out var msaaCaret) && IsOnScreen(msaaCaret))
-            return (true, GetImeStatus(foreground, focusWindow), msaaCaret, cls);
+            return (true, GetImeStatus(foreground, focusWindow, cls), msaaCaret, cls, foreground);
 
         // 3) UIA：Word 直接走；Chromium 只在 MSAA 连续失败后兜底（异步取最近结果，绝不阻塞本线程）
         var uiaAllowed = UiaClasses.Contains(cls) ||
@@ -323,22 +354,23 @@ public sealed class StatusWatcher : IDisposable
             UiaCaretLocator.TryGetCaret(foreground, out var uiaCaret) &&
             IsOnScreen(uiaCaret))
         {
-            return (true, GetImeStatus(foreground, focusWindow), uiaCaret, cls);
+            return (true, GetImeStatus(foreground, focusWindow, cls), uiaCaret, cls, foreground);
         }
 
-        return (false, InputStatus.Empty, null, cls);
+        return (false, InputStatus.Empty, null, cls, foreground);
     }
 
     private int _imeReads;
 
-    private InputStatus GetImeStatus(IntPtr foreground, IntPtr focusWindow)
+    private InputStatus GetImeStatus(IntPtr foreground, IntPtr focusWindow, string cls)
     {
         var now = Environment.TickCount64;
+        var cacheMs = cls.Equals("OpusApp", StringComparison.OrdinalIgnoreCase) ? ImeCacheWordMs : ImeCacheMs;
 
         ImeReadResult result;
         if (_imeCache is { } cached &&
             _imeCacheForeground == foreground && _imeCacheFocus == focusWindow &&
-            now - _imeCacheAt < ImeCacheMs)
+            now - _imeCacheAt < cacheMs)
         {
             result = cached;
         }
@@ -402,6 +434,10 @@ public sealed class StatusWatcher : IDisposable
                r.Top >= vsTop - slack && r.Bottom <= vsBottom + slack;
     }
 }
+
+
+
+
 
 
 
