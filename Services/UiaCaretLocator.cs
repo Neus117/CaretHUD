@@ -37,6 +37,7 @@ public static class UiaCaretLocator
     private static long _resultAt;
     private static bool _hasResult;
     private static bool _resetAutomation;
+    private static bool _disposed;
     private static int _consecutiveMiss;
     private static UIA3Automation? _automation;
 
@@ -63,7 +64,7 @@ public static class UiaCaretLocator
         {
             var now = Environment.TickCount64;
 
-            if (_worker is null)
+            if (_worker is null || _disposed)
                 return false;
 
             if (_busy != 0 && now - _requestAt > StuckMs)
@@ -100,6 +101,10 @@ public static class UiaCaretLocator
 
     public static void Dispose()
     {
+        lock (Gate)
+        {
+            _disposed = true;
+        }
         Request.Set();
         lock (Gate)
         {
@@ -116,6 +121,8 @@ public static class UiaCaretLocator
             IntPtr fg;
             lock (Gate)
             {
+                if (_disposed)
+                    return;
                 fg = _pendingFg;
                 if (_resetAutomation)
                 {
@@ -285,6 +292,7 @@ public static class UiaCaretLocator
         }
     }
 }
+
 
 
 
