@@ -30,7 +30,7 @@ public sealed class StatusWatcher : IDisposable
     private const int MsaaCacheBurstMs = 25;
     private const int MinDetectGapMs = 8;
     private const int ImeCacheMs = 150;
-    private const int ImeCacheWordMs = 600;      // Word 的 UI 线程很忙，IME 查询别那么频繁
+    private const int ImeCacheWordMs = 1000;     // Word 的 UI 线程很忙，IME 查询再降一档
     private const int HideGraceMs = 800;         // 光标短暂读不到时先别隐藏，避免闪一下
     private const int StatsIntervalMs = 10_000;
 
@@ -51,12 +51,6 @@ public sealed class StatusWatcher : IDisposable
         "Chrome_WidgetWin_0",
         "MozillaWindowClass",
         "ApplicationFrameWindow",
-        "OpusApp",
-    };
-
-    // UIA 只给 Word 用（Word 官方建议 UIA；GetGUIThreadInfo 在 Word 激活后有 1~2 秒延迟）
-    private static readonly HashSet<string> UiaClasses = new(StringComparer.OrdinalIgnoreCase)
-    {
         "OpusApp",
     };
 
@@ -343,14 +337,19 @@ public sealed class StatusWatcher : IDisposable
         if (CaretLocator.TryGetCaret(foreground, out var focusWindow, out var caret))
             return (true, GetImeStatus(foreground, focusWindow, cls), caret, cls, foreground);
 
+        // Word（OpusApp）：只用原生 caret。对它调 MSAA/UIA（WM_GETOBJECT）会让 Word 常驻开启无障碍层，
+        // 而 Word 的无障碍实现极重——用户实测"开着这个程序就打字卡到不能用，关掉就流畅"。
+        // 原生路径在 Word 里可用（实测 caret=731,695 1x46，单次 21~150µs），代价是偶尔读不到时浮窗不显示，
+        // 这对"Word 能用"是值得的交换。
+        if (cls.Equals("OpusApp", StringComparison.OrdinalIgnoreCase))
+            return (false, InputStatus.Empty, null, cls, foreground);
+
         // 2) MSAA：Chromium / Electron（本地缓存 + 退避，单次 ~1ms）
         if (MsaaCaretLocator.TryGetCaret(foreground, focusWindow, out var msaaCaret) && IsOnScreen(msaaCaret))
             return (true, GetImeStatus(foreground, focusWindow, cls), msaaCaret, cls, foreground);
 
-        // 3) UIA：Word 直接走；Chromium 只在 MSAA 连续失败后兜底（异步取最近结果，绝不阻塞本线程）
-        var uiaAllowed = UiaClasses.Contains(cls) ||
-                         (ChromiumClasses.Contains(cls) && MsaaCaretLocator.FailStreak >= 3);
-        if (uiaAllowed &&
+        // 3) UIA：Chromium 只在 MSAA 连续失败后兜底（异步取最近结果，绝不阻塞本线程）
+        if (ChromiumClasses.Contains(cls) && MsaaCaretLocator.FailStreak >= 3 &&
             UiaCaretLocator.TryGetCaret(foreground, out var uiaCaret) &&
             IsOnScreen(uiaCaret))
         {
@@ -434,6 +433,7 @@ public sealed class StatusWatcher : IDisposable
                r.Top >= vsTop - slack && r.Bottom <= vsBottom + slack;
     }
 }
+
 
 
 
