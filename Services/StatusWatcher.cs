@@ -30,7 +30,6 @@ public sealed class StatusWatcher : IDisposable
     private const int MsaaCacheBurstMs = 25;
     private const int MinDetectGapMs = 8;
     private const int ImeCacheMs = 150;
-    private const int ImeCacheWordMs = 1000;     // Word 的 UI 线程很忙，IME 查询再降一档
     private const int HideGraceMs = 800;         // 光标短暂读不到时先别隐藏，避免闪一下
     private const int HideGraceWordMs = 2500;    // Word 的原生 caret 会短暂消失，宽限期更长，免得"消失又出现"
     private const int StatsIntervalMs = 10_000;
@@ -367,12 +366,12 @@ public sealed class StatusWatcher : IDisposable
     private InputStatus GetImeStatus(IntPtr foreground, IntPtr focusWindow, string cls)
     {
         var now = Environment.TickCount64;
-        var cacheMs = cls.Equals("OpusApp", StringComparison.OrdinalIgnoreCase) ? ImeCacheWordMs : ImeCacheMs;
+
 
         ImeReadResult result;
         if (_imeCache is { } cached &&
             _imeCacheForeground == foreground && _imeCacheFocus == focusWindow &&
-            now - _imeCacheAt < cacheMs)
+            now - _imeCacheAt < ImeCacheMs)
         {
             result = cached;
         }
@@ -436,6 +435,7 @@ public sealed class StatusWatcher : IDisposable
                r.Top >= vsTop - slack && r.Bottom <= vsBottom + slack;
     }
 }
+
 
 
 
