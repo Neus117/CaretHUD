@@ -20,6 +20,7 @@ public partial class HudWindow : Window
     private static readonly Duration FadeInDuration = new(TimeSpan.FromMilliseconds(110));
     private static readonly Duration FadeOutDuration = new(TimeSpan.FromMilliseconds(90));
 
+    private int _fadeToken;
     private int _lastX = int.MinValue;
     private int _lastY = int.MinValue;
 
@@ -63,12 +64,16 @@ public partial class HudWindow : Window
     /// <summary>出现时淡入：消除窗口"硬弹出"的突兀感（不改变位置更新时间）。</summary>
     public void ShowAnimated()
     {
-        if (IsVisible)
-            return;
+        // 递增令牌：如果此刻正有一个淡出在跑，它的完成回调要作废，否则会在显示后把窗口藏掉
+        _fadeToken++;
 
-        Root.Opacity = 0;
-        Show();
-        Root.BeginAnimation(UIElement.OpacityProperty, new DoubleAnimation(0, 1, FadeInDuration)
+        if (!IsVisible)
+        {
+            Root.Opacity = 0;
+            Show();
+        }
+
+        Root.BeginAnimation(UIElement.OpacityProperty, new DoubleAnimation(Root.Opacity, 1, FadeInDuration)
         {
             EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut },
         });
@@ -80,14 +85,26 @@ public partial class HudWindow : Window
         if (!IsVisible)
             return;
 
+        var token = ++_fadeToken;
         var fade = new DoubleAnimation(1, 0, FadeOutDuration)
         {
             EasingFunction = new CubicEase { EasingMode = EasingMode.EaseIn },
         };
         fade.Completed += (_, _) =>
         {
-            if (Root.Opacity <= 0.01)
+            // 淡出期间又被要求显示：取消隐藏
+            if (token != _fadeToken)
+                return;
+            try
+            {
+                Root.BeginAnimation(UIElement.OpacityProperty, null);
+                Root.Opacity = 0;
                 Hide();
+            }
+            catch (InvalidOperationException)
+            {
+                // 窗口已关闭：忽略
+            }
         };
         Root.BeginAnimation(UIElement.OpacityProperty, fade);
     }
@@ -166,6 +183,7 @@ public partial class HudWindow : Window
         NativeMethods.SetWindowPos(hwnd, NativeMethods.HWND_TOPMOST, winX, winY, 0, 0, flags);
     }
 }
+
 
 
 
