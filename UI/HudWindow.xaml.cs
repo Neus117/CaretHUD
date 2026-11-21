@@ -61,6 +61,8 @@ public partial class HudWindow : Window
         NumBadge.Visibility = status.NumLock ? Visibility.Collapsed : Visibility.Visible;
     }
 
+    /// <summary>胶囊当前的透明度（用于判断"窗口可见但其实是透明的"）。</summary>
+    public double ContentOpacity => Root.Opacity;
     /// <summary>出现时淡入：消除窗口"硬弹出"的突兀感（不改变位置更新时间）。</summary>
     public void ShowAnimated()
     {
@@ -183,6 +185,7 @@ public partial class HudWindow : Window
         NativeMethods.SetWindowPos(hwnd, NativeMethods.HWND_TOPMOST, winX, winY, 0, 0, flags);
     }
 }
+
 
 
 

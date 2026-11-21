@@ -117,7 +117,8 @@ public partial class App : Application
             _hud.UpdateContent(status);
         }
 
-        if (!_hud.IsVisible)
+        // 窗口可能"可见但透明"（淡出被打断等），一并拉回不透明
+        if (!_hud.IsVisible || _hud.ContentOpacity < 0.999)
             _hud.ShowAnimated();
         _hud.MoveNear(caret.Value);
     }
@@ -141,4 +142,5 @@ public partial class App : Application
         base.OnExit(e);
     }
 }
+
 
