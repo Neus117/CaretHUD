@@ -252,6 +252,33 @@ public sealed class StatusWatcher : IDisposable
         return new Rect(x, y, 1, Math.Max(1, (int)Math.Round(16 * scale)));
     }
 
+    private uint _pidChecked;
+    private long _pidCheckedAt;
+    private bool _pidIsWord;
+
+    /// <summary>前台进程是不是 WINWORD（按 pid 缓存，避免每次 OpenProcess）。</summary>
+    private bool IsWordProcess(uint pid)
+    {
+        if (pid == 0)
+            return false;
+        // 缓存只信 5 秒：pid 会被系统复用，不能让"曾是 WINWORD 的 pid"永久生效
+        if (pid == _pidChecked && Environment.TickCount64 - _pidCheckedAt < 5000)
+            return _pidIsWord;
+
+        _pidChecked = pid;
+        _pidCheckedAt = Environment.TickCount64;
+        try
+        {
+            _pidIsWord = System.Diagnostics.Process.GetProcessById((int)pid)
+                .ProcessName.Equals("WINWORD", StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            _pidIsWord = false;
+        }
+        return _pidIsWord;
+    }
+
     private static uint PidOf(IntPtr hwnd)
     {
         if (hwnd == IntPtr.Zero)
@@ -370,7 +397,10 @@ public sealed class StatusWatcher : IDisposable
         // Word：方向键移动光标时它不创建系统光标（实测 108 个线程都没有），MSAA/UIA 又会让它卡。
         // 所以 Word 里用"主窗口左侧中部"的固定角标，并且必须放在原生 caret 判断之前，
         // 否则点击/打字时 caret 存在就会走到光标位置，和角标来回跳。
+        // 判定"是不是 Word"用进程名，而不是只认主窗口类名：Word 的弹层/对话框也是 WINWORD 进程，
+        // 若只看类名它们会掉进 MSAA 分支，等于重新去碰 Word 的无障碍层。
         var fgPid = PidOf(foreground);
+        var isWord = cls.Equals("OpusApp", StringComparison.OrdinalIgnoreCase) || IsWordProcess(fgPid);
         if (cls.Equals("OpusApp", StringComparison.OrdinalIgnoreCase))
         {
             _wordMain = foreground;
@@ -381,21 +411,17 @@ public sealed class StatusWatcher : IDisposable
             _wordMain = IntPtr.Zero;
             _wordPid = 0;
         }
-        if (_wordMain != IntPtr.Zero && fgPid != 0 && fgPid == _wordPid)
+        if (isWord)
         {
-            var anchor = WordAnchor(_wordMain);
+            var anchor = WordAnchor(_wordMain != IntPtr.Zero ? _wordMain : foreground);
             if (anchor is not null)
                 return (true, GetImeStatus(foreground, IntPtr.Zero, cls), anchor, cls, foreground);
+            return (false, InputStatus.Empty, null, cls, foreground);
         }
 
         // 1) 原生 caret：本地内核调用，µs 级
         if (CaretLocator.TryGetCaret(foreground, out var focusWindow, out var caret))
             return (true, GetImeStatus(foreground, focusWindow, cls), caret, cls, foreground);
-
-        // Word：原生读不到就到此为止，绝不回退到 MSAA/UIA（会让 Word 常驻开启无障碍层、打字卡死）。
-        // Word 只在点击/打字时短暂创建系统光标，其余时间没有位置可读——这时靠保持窗口停在原处。
-        if (cls.Equals("OpusApp", StringComparison.OrdinalIgnoreCase))
-            return (false, InputStatus.Empty, null, cls, foreground);
 
         // 2) MSAA：Chromium / Electron（本地缓存 + 退避，单次 ~1ms）
         //    对无响应窗口不发 WM_GETOBJECT：oleacc 是同步 SendMessage，目标挂起会把检测线程一起挂住。
@@ -489,6 +515,8 @@ public sealed class StatusWatcher : IDisposable
                r.Top >= vsTop - slack && r.Bottom <= vsBottom + slack;
     }
 }
+
+
 
 
 
