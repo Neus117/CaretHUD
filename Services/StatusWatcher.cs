@@ -94,6 +94,8 @@ public sealed class StatusWatcher : IDisposable
     // 统计（仅在开启日志时输出）
     private long _lastCaretAt;
     private IntPtr _lastCaretForeground;
+    private IntPtr _wordMain;
+    private uint _wordPid;
     private uint _lastCaretPid;
 
     private long _statAt;
@@ -361,22 +363,35 @@ public sealed class StatusWatcher : IDisposable
         if (cls.Length == 0 || IgnoredClasses.Contains(cls))
             return (false, InputStatus.Empty, null, cls, foreground);
 
+        // Word：方向键移动光标时它不创建系统光标（实测 108 个线程都没有），MSAA/UIA 又会让它卡。
+        // 所以 Word 里一律用"主窗口右下角"的状态角标，并且必须放在原生 caret 判断之前——
+        // 否则点击/打字时 caret 存在就会走到光标位置，和角标来回跳。
+        var fgPid = PidOf(foreground);
+        if (cls.Equals("OpusApp", StringComparison.OrdinalIgnoreCase))
+        {
+            _wordMain = foreground;
+            _wordPid = fgPid;
+        }
+        if (_wordMain != IntPtr.Zero && !NativeMethods.IsWindow(_wordMain))
+        {
+            _wordMain = IntPtr.Zero;
+            _wordPid = 0;
+        }
+        if (_wordMain != IntPtr.Zero && fgPid != 0 && fgPid == _wordPid)
+        {
+            var anchor = WordAnchor(_wordMain);
+            if (anchor is not null)
+                return (true, GetImeStatus(foreground, IntPtr.Zero, cls), anchor, cls, foreground);
+        }
+
         // 1) 原生 caret：本地内核调用，µs 级
         if (CaretLocator.TryGetCaret(foreground, out var focusWindow, out var caret))
             return (true, GetImeStatus(foreground, focusWindow, cls), caret, cls, foreground);
 
-        // Word（OpusApp）：方向键移动光标时 Word 不创建系统光标（实测 108 个线程都没有），
-        // 跟不了位置；而 MSAA/UIA 会让 Word 常驻开启无障碍层、打字卡到不能用。
-        // 所以 Word 里改成"固定在窗口右下角的状态角标"——位置可预期、不闪、不偏，状态照常实时。
-        if (cls.Equals("OpusApp", StringComparison.OrdinalIgnoreCase))
-        {
-            var anchor = WordAnchor(foreground);
-            if (anchor is null)
-                return (false, InputStatus.Empty, null, cls, foreground);
-            return (true, GetImeStatus(foreground, IntPtr.Zero, cls), anchor, cls, foreground);
-        }
-
         // 2) MSAA：Chromium / Electron（本地缓存 + 退避，单次 ~1ms）
+        //    对无响应窗口不发 WM_GETOBJECT：oleacc 是同步 SendMessage，目标挂起会把检测线程一起挂住。
+        if (NativeMethods.IsHungAppWindow(foreground))
+            return (false, InputStatus.Empty, null, cls, foreground);
         if (MsaaCaretLocator.TryGetCaret(foreground, focusWindow, out var msaaCaret) && IsOnScreen(msaaCaret))
             return (true, GetImeStatus(foreground, focusWindow, cls), msaaCaret, cls, foreground);
 
@@ -465,6 +480,8 @@ public sealed class StatusWatcher : IDisposable
                r.Top >= vsTop - slack && r.Bottom <= vsBottom + slack;
     }
 }
+
+
 
 
 
