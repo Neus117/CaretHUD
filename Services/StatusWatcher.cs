@@ -22,6 +22,7 @@ public sealed class StatusWatcher : IDisposable
     private const int CaretPollMs = 200;
     private const int ChromiumPollMs = 150;
     private const int WordPollMs = 60;           // Word 只读原生 caret（µs 级），可以问得更勤
+    private const int WordMissPollMs = 15;       // Word 的光标只短暂暴露（一两百毫秒），没光标时问得更密才抓得住
 
     // 打字突发（最近 500ms 内有任何键盘/鼠标输入）时加速采样，把"跟手延迟"压到一个屏幕帧量级
     private const int BurstWindowMs = 500;
@@ -32,7 +33,7 @@ public sealed class StatusWatcher : IDisposable
     private const int MinDetectGapMs = 8;
     private const int ImeCacheMs = 50;           // 缓存比轮询短：每次检测都读最新的，消除"相位差"造成的忽快忽慢
     private const int HideGraceMs = 800;         // 光标短暂读不到时先别隐藏，避免闪一下
-    private const int HideGraceWordMs = 2500;    // Word 的原生 caret 会短暂消失，宽限期更长，免得"消失又出现"
+    private const int HideGraceWordMs = 8000;    // Word 会把系统光标销毁好几秒；保持更久，免得"消失又出现"
     private const int StatsIntervalMs = 10_000;
 
     private static readonly HashSet<string> IgnoredClasses = new(StringComparer.OrdinalIgnoreCase)
@@ -319,6 +320,14 @@ public sealed class StatusWatcher : IDisposable
 
     private static int PollInterval(string cls, bool caretVisible, bool bursting)
     {
+        if (cls.Equals("OpusApp", StringComparison.OrdinalIgnoreCase))
+        {
+            // Word 的光标经常被它自己销毁，且暴露窗口只有一两百毫秒：
+            // 看不到时 15ms 抓，看到后 60ms 跟随（突发时 40ms）。
+            if (!caretVisible)
+                return WordMissPollMs;
+            return bursting ? BurstPollMs : WordPollMs;
+        }
         if (ChromiumClasses.Contains(cls))
             return bursting ? BurstChromiumPollMs : ChromiumPollMs;
         if (bursting)
@@ -436,6 +445,7 @@ public sealed class StatusWatcher : IDisposable
                r.Top >= vsTop - slack && r.Bottom <= vsBottom + slack;
     }
 }
+
 
 
 
