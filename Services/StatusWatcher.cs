@@ -230,6 +230,22 @@ public sealed class StatusWatcher : IDisposable
 
     private static int GraceFor(string cls) =>
         cls.Equals("OpusApp", StringComparison.OrdinalIgnoreCase) ? HideGraceWordMs : HideGraceMs;
+    /// <summary>Word 状态角标的锚点：窗口右下角、状态栏上方（屏幕物理像素）。</summary>
+    private static Rect? WordAnchor(IntPtr hwnd)
+    {
+        if (!NativeMethods.GetWindowRect(hwnd, out var wr))
+            return null;
+        if (wr.Width < 160 || wr.Height < 160)
+            return null;
+
+        var dpi = NativeMethods.GetDpiForWindow(hwnd);
+        var scale = dpi > 0 ? dpi / 96.0 : 1.0;
+
+        var x = wr.Right - (int)Math.Round(48 * scale);
+        var y = wr.Bottom - (int)Math.Round(72 * scale);
+        return new Rect(x, y, 1, Math.Max(1, (int)Math.Round(16 * scale)));
+    }
+
     private static uint PidOf(IntPtr hwnd)
     {
         if (hwnd == IntPtr.Zero)
@@ -349,12 +365,16 @@ public sealed class StatusWatcher : IDisposable
         if (CaretLocator.TryGetCaret(foreground, out var focusWindow, out var caret))
             return (true, GetImeStatus(foreground, focusWindow, cls), caret, cls, foreground);
 
-        // Word（OpusApp）：只用原生 caret。对它调 MSAA/UIA（WM_GETOBJECT）会让 Word 常驻开启无障碍层，
-        // 而 Word 的无障碍实现极重——用户实测"开着这个程序就打字卡到不能用，关掉就流畅"。
-        // 原生路径在 Word 里可用（实测 caret=731,695 1x46，单次 21~150µs），代价是偶尔读不到时浮窗不显示，
-        // 这对"Word 能用"是值得的交换。
+        // Word（OpusApp）：方向键移动光标时 Word 不创建系统光标（实测 108 个线程都没有），
+        // 跟不了位置；而 MSAA/UIA 会让 Word 常驻开启无障碍层、打字卡到不能用。
+        // 所以 Word 里改成"固定在窗口右下角的状态角标"——位置可预期、不闪、不偏，状态照常实时。
         if (cls.Equals("OpusApp", StringComparison.OrdinalIgnoreCase))
-            return (false, InputStatus.Empty, null, cls, foreground);
+        {
+            var anchor = WordAnchor(foreground);
+            if (anchor is null)
+                return (false, InputStatus.Empty, null, cls, foreground);
+            return (true, GetImeStatus(foreground, IntPtr.Zero, cls), anchor, cls, foreground);
+        }
 
         // 2) MSAA：Chromium / Electron（本地缓存 + 退避，单次 ~1ms）
         if (MsaaCaretLocator.TryGetCaret(foreground, focusWindow, out var msaaCaret) && IsOnScreen(msaaCaret))
@@ -445,6 +465,7 @@ public sealed class StatusWatcher : IDisposable
                r.Top >= vsTop - slack && r.Bottom <= vsBottom + slack;
     }
 }
+
 
 
 
