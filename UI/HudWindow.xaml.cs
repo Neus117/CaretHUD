@@ -120,10 +120,10 @@ public partial class HudWindow : Window
 
         var gap = 4 * scale;
 
-        // 目标：胶囊位于光标正上方，水平与光标居中对齐（不压光标和文字）
+        // 目标：胶囊位于光标正下方，水平与光标居中对齐
         var caretCenterX = caretScreen.Left + caretScreen.Width / 2;
         var capsuleLeft = caretCenterX - capsuleW / 2;
-        var capsuleTop = caretScreen.Top - gap - capsuleH;
+        var capsuleTop = caretScreen.Bottom + gap;
 
         // 水平夹紧
         if (capsuleLeft < vsLeft)
@@ -131,13 +131,13 @@ public partial class HudWindow : Window
         if (capsuleLeft + capsuleW > vsRight)
             capsuleLeft = vsRight - capsuleW;
 
-        // 垂直避让：上方放不下放光标下方，再不行夹紧
-        if (capsuleTop < vsTop)
-            capsuleTop = caretScreen.Bottom + gap;
+        // 垂直避让：下方放不下就翻到上方，再不行夹紧
         if (capsuleTop + capsuleH > vsBottom)
-            capsuleTop = vsBottom - capsuleH;
-        if (capsuleTop < vsTop)
-            capsuleTop = vsTop;
+        {
+            capsuleTop = caretScreen.Top - gap - capsuleH;
+            if (capsuleTop < vsTop)
+                capsuleTop = vsTop;
+        }
 
         var winX = (int)Math.Round(capsuleLeft - margin);
         var winY = (int)Math.Round(capsuleTop - margin);
@@ -166,6 +166,7 @@ public partial class HudWindow : Window
         NativeMethods.SetWindowPos(hwnd, NativeMethods.HWND_TOPMOST, winX, winY, 0, 0, flags);
     }
 }
+
 
 
 
