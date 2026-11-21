@@ -197,10 +197,11 @@ internal static class NativeMethods
     public static (bool Ok, int Value) SendMessageTimeoutInt(IntPtr hWnd, int msg, int wParam)
     {
         var signaled = SendMessageTimeout(
-            hWnd, (uint)msg, (IntPtr)wParam, IntPtr.Zero, SMTO_ABORTIFHUNG, 100, out var result);
+            hWnd, (uint)msg, (IntPtr)wParam, IntPtr.Zero, SMTO_ABORTIFHUNG, 25, out var result);
         return (signaled != IntPtr.Zero, (int)result);
     }
 }
+
 
 
 

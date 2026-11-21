@@ -21,6 +21,7 @@ public sealed class StatusWatcher : IDisposable
     private const int IdlePollMs = 500;
     private const int CaretPollMs = 200;
     private const int ChromiumPollMs = 150;
+    private const int WordPollMs = 60;           // Word 只读原生 caret（µs 级），可以问得更勤
 
     // 打字突发（最近 500ms 内有任何键盘/鼠标输入）时加速采样，把"跟手延迟"压到一个屏幕帧量级
     private const int BurstWindowMs = 500;
@@ -29,7 +30,7 @@ public sealed class StatusWatcher : IDisposable
     private const int MsaaCacheIdleMs = 120;
     private const int MsaaCacheBurstMs = 25;
     private const int MinDetectGapMs = 8;
-    private const int ImeCacheMs = 150;
+    private const int ImeCacheMs = 50;           // 缓存比轮询短：每次检测都读最新的，消除"相位差"造成的忽快忽慢
     private const int HideGraceMs = 800;         // 光标短暂读不到时先别隐藏，避免闪一下
     private const int HideGraceWordMs = 2500;    // Word 的原生 caret 会短暂消失，宽限期更长，免得"消失又出现"
     private const int StatsIntervalMs = 10_000;
@@ -435,6 +436,7 @@ public sealed class StatusWatcher : IDisposable
                r.Top >= vsTop - slack && r.Bottom <= vsBottom + slack;
     }
 }
+
 
 
 

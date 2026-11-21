@@ -26,10 +26,14 @@ public static class ImeStateReader
         if (imeWnd != IntPtr.Zero)
         {
             var openResult = NativeMethods.SendMessageTimeoutInt(imeWnd, NativeMethods.WM_IME_CONTROL, NativeMethods.IMC_GETOPENSTATUS);
-            var convResult = NativeMethods.SendMessageTimeoutInt(imeWnd, NativeMethods.WM_IME_CONTROL, NativeMethods.IMC_GETCONVERSIONMODE);
-            smtoOk = openResult.Ok && convResult.Ok;
             opened = openResult.Value;
-            convMode = convResult.Value;
+            // 第一次就超时（目标 UI 线程忙）就不发第二次，别把检测线程多堵一个超时
+            if (openResult.Ok)
+            {
+                var convResult = NativeMethods.SendMessageTimeoutInt(imeWnd, NativeMethods.WM_IME_CONTROL, NativeMethods.IMC_GETCONVERSIONMODE);
+                convMode = convResult.Value;
+                smtoOk = convResult.Ok;
+            }
         }
 
         var chinese = smtoOk && opened != 0 && (convMode & (int)NativeMethods.IME_CMODE_NATIVE) != 0;
@@ -37,3 +41,4 @@ public static class ImeStateReader
         return new ImeReadResult(hwnd, imeWnd, opened, convMode, smtoOk, chinese);
     }
 }
+
