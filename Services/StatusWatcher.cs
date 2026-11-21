@@ -23,6 +23,8 @@ public sealed class StatusWatcher : IDisposable
     private const int ChromiumPollMs = 150;
     private const int WordPollMs = 60;           // Word 只读原生 caret（µs 级），可以问得更勤
     private const int WordMissPollMs = 15;       // Word 的光标只短暂暴露（一两百毫秒），没光标时问得更密才抓得住
+    private const double WordAnchorXFraction = 0.22;   // 角标横向位置（占窗口宽度的比例）
+    private const double WordAnchorYFraction = 0.53;   // 角标纵向位置（占窗口高度的比例）
 
     // 打字突发（最近 500ms 内有任何键盘/鼠标输入）时加速采样，把"跟手延迟"压到一个屏幕帧量级
     private const int BurstWindowMs = 500;
@@ -243,8 +245,11 @@ public sealed class StatusWatcher : IDisposable
         var dpi = NativeMethods.GetDpiForWindow(hwnd);
         var scale = dpi > 0 ? dpi / 96.0 : 1.0;
 
-        var x = wr.Left + (int)Math.Round(48 * scale);
-        var y = wr.Bottom - (int)Math.Round(72 * scale);
+        // 位置按窗口比例取（左侧、页面中部偏左的留白处），跟着窗口缩放走
+        var x = wr.Left + (int)Math.Round(wr.Width * WordAnchorXFraction);
+        var y = wr.Top + (int)Math.Round(wr.Height * WordAnchorYFraction);
+        if (x < wr.Left + 60)
+            x = wr.Left + 60;
         return new Rect(x, y, 1, Math.Max(1, (int)Math.Round(16 * scale)));
     }
 
@@ -480,6 +485,7 @@ public sealed class StatusWatcher : IDisposable
                r.Top >= vsTop - slack && r.Bottom <= vsBottom + slack;
     }
 }
+
 
 
 
