@@ -22,7 +22,9 @@ public sealed class StatusWatcher : IDisposable
     private const int CaretPollMs = 200;
     private const int ChromiumPollMs = 150;
     private const int WordPollMs = 60;           // Word 只读原生 caret（µs 级），可以问得更勤
-    private const int WordMissPollMs = 15;       // Word 的光标只短暂暴露（一两百毫秒），没光标时问得更密才抓得住
+    private const int WordMissPollMs = 15;
+    private const double WordAnchorXFraction = 0.22;   // Word 角标横向位置（窗口宽度比例）
+    private const double WordAnchorYFraction = 0.50;   // Word 角标纵向位置（窗口高度比例；浮窗落在锚点下方）       // Word 的光标只短暂暴露（一两百毫秒），没光标时问得更密才抓得住
 
     // 打字突发（最近 500ms 内有任何键盘/鼠标输入）时加速采样，把"跟手延迟"压到一个屏幕帧量级
     private const int BurstWindowMs = 500;
@@ -94,6 +96,8 @@ public sealed class StatusWatcher : IDisposable
     // 统计（仅在开启日志时输出）
     private long _lastCaretAt;
     private IntPtr _lastCaretForeground;
+    private IntPtr _wordMain;
+    private uint _wordPid;
     private uint _lastCaretPid;
 
     private long _statAt;
@@ -230,6 +234,24 @@ public sealed class StatusWatcher : IDisposable
 
     private static int GraceFor(string cls) =>
         cls.Equals("OpusApp", StringComparison.OrdinalIgnoreCase) ? HideGraceWordMs : HideGraceMs;
+    /// <summary>Word 状态角标的锚点：主窗口左侧、中部（按窗口比例；浮窗落在锚点下方）。</summary>
+    private static Rect? WordAnchor(IntPtr hwnd)
+    {
+        if (!NativeMethods.GetWindowRect(hwnd, out var wr))
+            return null;
+        if (wr.Width < 160 || wr.Height < 160)
+            return null;
+
+        var dpi = NativeMethods.GetDpiForWindow(hwnd);
+        var scale = dpi > 0 ? dpi / 96.0 : 1.0;
+
+        var x = wr.Left + (int)Math.Round(wr.Width * WordAnchorXFraction);
+        var y = wr.Top + (int)Math.Round(wr.Height * WordAnchorYFraction);
+        if (x < wr.Left + 60)
+            x = wr.Left + 60;
+        return new Rect(x, y, 1, Math.Max(1, (int)Math.Round(16 * scale)));
+    }
+
     private static uint PidOf(IntPtr hwnd)
     {
         if (hwnd == IntPtr.Zero)
@@ -345,6 +367,27 @@ public sealed class StatusWatcher : IDisposable
         if (cls.Length == 0 || IgnoredClasses.Contains(cls))
             return (false, InputStatus.Empty, null, cls, foreground);
 
+        // Word：方向键移动光标时它不创建系统光标（实测 108 个线程都没有），MSAA/UIA 又会让它卡。
+        // 所以 Word 里用"主窗口左侧中部"的固定角标，并且必须放在原生 caret 判断之前，
+        // 否则点击/打字时 caret 存在就会走到光标位置，和角标来回跳。
+        var fgPid = PidOf(foreground);
+        if (cls.Equals("OpusApp", StringComparison.OrdinalIgnoreCase))
+        {
+            _wordMain = foreground;
+            _wordPid = fgPid;
+        }
+        if (_wordMain != IntPtr.Zero && !NativeMethods.IsWindow(_wordMain))
+        {
+            _wordMain = IntPtr.Zero;
+            _wordPid = 0;
+        }
+        if (_wordMain != IntPtr.Zero && fgPid != 0 && fgPid == _wordPid)
+        {
+            var anchor = WordAnchor(_wordMain);
+            if (anchor is not null)
+                return (true, GetImeStatus(foreground, IntPtr.Zero, cls), anchor, cls, foreground);
+        }
+
         // 1) 原生 caret：本地内核调用，µs 级
         if (CaretLocator.TryGetCaret(foreground, out var focusWindow, out var caret))
             return (true, GetImeStatus(foreground, focusWindow, cls), caret, cls, foreground);
@@ -446,6 +489,7 @@ public sealed class StatusWatcher : IDisposable
                r.Top >= vsTop - slack && r.Bottom <= vsBottom + slack;
     }
 }
+
 
 
 
