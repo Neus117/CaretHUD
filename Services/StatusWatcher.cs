@@ -243,7 +243,7 @@ public sealed class StatusWatcher : IDisposable
         var dpi = NativeMethods.GetDpiForWindow(hwnd);
         var scale = dpi > 0 ? dpi / 96.0 : 1.0;
 
-        var x = wr.Right - (int)Math.Round(48 * scale);
+        var x = wr.Left + (int)Math.Round(48 * scale);
         var y = wr.Bottom - (int)Math.Round(72 * scale);
         return new Rect(x, y, 1, Math.Max(1, (int)Math.Round(16 * scale)));
     }
@@ -480,6 +480,7 @@ public sealed class StatusWatcher : IDisposable
                r.Top >= vsTop - slack && r.Bottom <= vsBottom + slack;
     }
 }
+
 
 
 
