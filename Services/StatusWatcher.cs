@@ -431,7 +431,7 @@ public sealed class StatusWatcher : IDisposable
             return (true, GetImeStatus(foreground, focusWindow, cls), msaaCaret, cls, foreground);
 
         // 3) UIA：Chromium 只在 MSAA 连续失败后兜底（异步取最近结果，绝不阻塞本线程）
-        if (ChromiumClasses.Contains(cls) && MsaaCaretLocator.FailStreak >= 3 &&
+        if (ChromiumClasses.Contains(cls) && MsaaCaretLocator.FailStreak >= 3 && !MsaaCaretLocator.NonEditableFocus &&
             UiaCaretLocator.TryGetCaret(foreground, out var uiaCaret) &&
             IsOnScreen(uiaCaret))
         {
@@ -515,6 +515,7 @@ public sealed class StatusWatcher : IDisposable
                r.Top >= vsTop - slack && r.Bottom <= vsBottom + slack;
     }
 }
+
 
 
 

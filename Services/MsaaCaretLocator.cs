@@ -51,6 +51,9 @@ public static class MsaaCaretLocator
     /// <summary>其中没有拿到插入点的次数（统计用）。</summary>
     public static int FailCount;
 
+    /// <summary>最近一次查询"有光标对象但焦点不可编辑"：此时不必再走 UIA 兜底。</summary>
+    public static bool NonEditableFocus;
+
     /// <summary>当前窗口连续失败次数：达到一定值才允许启用 UIA 兜底。</summary>
     public static int FailStreak => _failStreak;
 
@@ -136,6 +139,70 @@ public static class MsaaCaretLocator
         }
     }
 
+    private static IntPtr _editHwnd;
+    private static Rect _editCaret;
+    private static long _editAt;
+    private static bool _editOk;
+
+    /// <summary>
+    /// Chromium 在没有编辑框时也会返回一个"光标"对象（实测 state 含 STATE_SYSTEM_INVISIBLE，
+    /// 且焦点元素是只读文档）。这里向 OBJID_CLIENT 的焦点元素要 state：只读就不算可编辑。
+    /// 判定结果按 (窗口, 光标位置) 缓存 1 秒，避免在高负载页面上反复付 20~30ms 的代价。
+    /// </summary>
+    private static bool FocusIsEditable(IntPtr hwnd, Rect caret)
+    {
+        var now = Environment.TickCount64;
+        if (hwnd == _editHwnd && caret == _editCaret && now - _editAt < 1000)
+            return _editOk;
+
+        _editHwnd = hwnd;
+        _editCaret = caret;
+        _editAt = now;
+        _editOk = true;   // 默认放行：判定失败时不误伤正常的光标
+
+        IntPtr pacc = IntPtr.Zero;
+        try
+        {
+            var iid = IidAccessible;
+            if (NativeMethods.AccessibleObjectFromWindow(hwnd, 0xFFFFFFFC, ref iid, out pacc) != 0 || pacc == IntPtr.Zero)
+                return _editOk;
+
+            var acc = (IAccessible)Marshal.GetObjectForIUnknown(pacc);
+            var focus = acc.accFocus;
+            const int StateSystemReadOnly = 0x00000040;
+            int state;
+            if (focus is IAccessible fa)
+            {
+                state = Convert.ToInt32(fa.get_accState(0));
+                _editOk = (state & StateSystemReadOnly) == 0;
+            }
+            else if (focus is int child)
+            {
+                // accFocus 可能只返回子 ID：这时要用父对象的 get_accState(childId)
+                state = Convert.ToInt32(acc.get_accState(child));
+                _editOk = (state & StateSystemReadOnly) == 0;
+            }
+            else
+            {
+                state = -1;
+                _editOk = true;
+            }
+            NonEditableFocus = !_editOk;
+            if (AppLog.Enabled)
+                AppLog.Write($"msaa: focus={focus?.GetType().Name} child={(focus is int c ? c : -1)} state=0x{state:X} editable={_editOk}");
+        }
+        catch
+        {
+            // 判定失败：放行
+        }
+        finally
+        {
+            if (pacc != IntPtr.Zero)
+                Marshal.Release(pacc);
+        }
+        return _editOk;
+    }
+
     private static bool TryQuery(IntPtr hwnd, out Rect caret, out int hr)
     {
         caret = default;
@@ -155,7 +222,10 @@ public static class MsaaCaretLocator
             if (cy <= 0 || x <= -32000 || y <= -32000)
                 return false;
 
-            caret = new Rect(x, y, Math.Max(cx, 1), cy);
+            var rect = new Rect(x, y, Math.Max(cx, 1), cy);
+            if (!FocusIsEditable(hwnd, rect))
+                return false;
+            caret = rect;
             return true;
         }
         catch (Exception ex)
@@ -180,5 +250,9 @@ public static class MsaaCaretLocator
         return NativeMethods.GetClassName(hwnd, sb, sb.Capacity) > 0 ? sb.ToString() : string.Empty;
     }
 }
+
+
+
+
 
 
