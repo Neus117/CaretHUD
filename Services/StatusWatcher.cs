@@ -33,7 +33,7 @@ public sealed class StatusWatcher : IDisposable
     private const int MsaaCacheIdleMs = 120;
     private const int MsaaCacheBurstMs = 25;
     private const int MinDetectGapMs = 8;
-    private const int ChromiumCaretStaleMs = 5000;   // Chromium 里光标静止超过这个时间就不显示（视为没在输入）
+    private const int ChromiumCaretStaleMs = 3000;   // Chromium 里光标静止超过这个时间就不显示（视为没在输入）
     private const int ImeCacheMs = 50;           // 缓存比轮询短：每次检测都读最新的，消除"相位差"造成的忽快忽慢
     private const int HideGraceMs = 800;         // 光标短暂读不到时先别隐藏，避免闪一下
     private const int HideGraceWordMs = 8000;    // Word 会把系统光标销毁好几秒；保持更久，免得"消失又出现"
@@ -521,6 +521,7 @@ public sealed class StatusWatcher : IDisposable
                r.Top >= vsTop - slack && r.Bottom <= vsBottom + slack;
     }
 }
+
 
 
 
