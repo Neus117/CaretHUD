@@ -33,6 +33,7 @@ public sealed class StatusWatcher : IDisposable
     private const int MsaaCacheIdleMs = 120;
     private const int MsaaCacheBurstMs = 25;
     private const int MinDetectGapMs = 8;
+    private const int ChromiumCaretStaleMs = 5000;   // Chromium 里光标静止超过这个时间就不显示（视为没在输入）
     private const int ImeCacheMs = 50;           // 缓存比轮询短：每次检测都读最新的，消除"相位差"造成的忽快忽慢
     private const int HideGraceMs = 800;         // 光标短暂读不到时先别隐藏，避免闪一下
     private const int HideGraceWordMs = 8000;    // Word 会把系统光标销毁好几秒；保持更久，免得"消失又出现"
@@ -428,10 +429,15 @@ public sealed class StatusWatcher : IDisposable
         if (NativeMethods.IsHungAppWindow(foreground))
             return (false, InputStatus.Empty, null, cls, foreground);
         if (MsaaCaretLocator.TryGetCaret(foreground, focusWindow, out var msaaCaret) && IsOnScreen(msaaCaret))
-            return (true, GetImeStatus(foreground, focusWindow, cls), msaaCaret, cls, foreground);
+        {
+            // Chromium 在没有编辑框时也会返回一个静止的旧光标（实测视频页和输入框在无障碍层完全一样）。
+            // 光标长时间不动 = 没在输入，就别显示：否则会一直贴在页面上挡住内容。
+            if (Environment.TickCount64 - MsaaCaretLocator.LastRectChangeAt < ChromiumCaretStaleMs)
+                return (true, GetImeStatus(foreground, focusWindow, cls), msaaCaret, cls, foreground);
+        }
 
         // 3) UIA：Chromium 只在 MSAA 连续失败后兜底（异步取最近结果，绝不阻塞本线程）
-        if (ChromiumClasses.Contains(cls) && MsaaCaretLocator.FailStreak >= 3 && !MsaaCaretLocator.NonEditableFocus &&
+        if (ChromiumClasses.Contains(cls) && MsaaCaretLocator.FailStreak >= 3 &&
             UiaCaretLocator.TryGetCaret(foreground, out var uiaCaret) &&
             IsOnScreen(uiaCaret))
         {
@@ -515,6 +521,8 @@ public sealed class StatusWatcher : IDisposable
                r.Top >= vsTop - slack && r.Bottom <= vsBottom + slack;
     }
 }
+
+
 
 
 

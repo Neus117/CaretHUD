@@ -31,6 +31,11 @@ public static class MsaaCaretLocator
     private static Rect _cacheCaret;
     private static long _cacheAt;
     private static bool _cacheValid;
+    private static long _lastChangeAt;
+    private static Rect _lastReturned;
+    private static bool _hasLastReturned;
+    /// <summary>最近一次"光标位置发生变化"的时刻；用于判断用户是不是还在输入。</summary>
+    public static long LastRectChangeAt => _lastChangeAt;
     private static long _nextAttemptAt;
     private static bool _forceRefresh;
     private static int _failStreak;
@@ -139,70 +144,6 @@ public static class MsaaCaretLocator
         }
     }
 
-    private static IntPtr _editHwnd;
-    private static Rect _editCaret;
-    private static long _editAt;
-    private static bool _editOk;
-
-    /// <summary>
-    /// Chromium 在没有编辑框时也会返回一个"光标"对象（实测 state 含 STATE_SYSTEM_INVISIBLE，
-    /// 且焦点元素是只读文档）。这里向 OBJID_CLIENT 的焦点元素要 state：只读就不算可编辑。
-    /// 判定结果按 (窗口, 光标位置) 缓存 1 秒，避免在高负载页面上反复付 20~30ms 的代价。
-    /// </summary>
-    private static bool FocusIsEditable(IntPtr hwnd, Rect caret)
-    {
-        var now = Environment.TickCount64;
-        if (hwnd == _editHwnd && caret == _editCaret && now - _editAt < 1000)
-            return _editOk;
-
-        _editHwnd = hwnd;
-        _editCaret = caret;
-        _editAt = now;
-        _editOk = true;   // 默认放行：判定失败时不误伤正常的光标
-
-        IntPtr pacc = IntPtr.Zero;
-        try
-        {
-            var iid = IidAccessible;
-            if (NativeMethods.AccessibleObjectFromWindow(hwnd, 0xFFFFFFFC, ref iid, out pacc) != 0 || pacc == IntPtr.Zero)
-                return _editOk;
-
-            var acc = (IAccessible)Marshal.GetObjectForIUnknown(pacc);
-            var focus = acc.accFocus;
-            const int StateSystemReadOnly = 0x00000040;
-            int state;
-            if (focus is IAccessible fa)
-            {
-                state = Convert.ToInt32(fa.get_accState(0));
-                _editOk = (state & StateSystemReadOnly) == 0;
-            }
-            else if (focus is int child)
-            {
-                // accFocus 可能只返回子 ID：这时要用父对象的 get_accState(childId)
-                state = Convert.ToInt32(acc.get_accState(child));
-                _editOk = (state & StateSystemReadOnly) == 0;
-            }
-            else
-            {
-                state = -1;
-                _editOk = true;
-            }
-            NonEditableFocus = !_editOk;
-            if (AppLog.Enabled)
-                AppLog.Write($"msaa: focus={focus?.GetType().Name} child={(focus is int c ? c : -1)} state=0x{state:X} editable={_editOk}");
-        }
-        catch
-        {
-            // 判定失败：放行
-        }
-        finally
-        {
-            if (pacc != IntPtr.Zero)
-                Marshal.Release(pacc);
-        }
-        return _editOk;
-    }
-
     private static bool TryQuery(IntPtr hwnd, out Rect caret, out int hr)
     {
         caret = default;
@@ -223,8 +164,12 @@ public static class MsaaCaretLocator
                 return false;
 
             var rect = new Rect(x, y, Math.Max(cx, 1), cy);
-            if (!FocusIsEditable(hwnd, rect))
-                return false;
+            if (!_hasLastReturned || rect != _lastReturned)
+            {
+                _lastReturned = rect;
+                _hasLastReturned = true;
+                _lastChangeAt = Environment.TickCount64;
+            }
             caret = rect;
             return true;
         }
@@ -250,6 +195,8 @@ public static class MsaaCaretLocator
         return NativeMethods.GetClassName(hwnd, sb, sb.Capacity) > 0 ? sb.ToString() : string.Empty;
     }
 }
+
+
 
 
 
